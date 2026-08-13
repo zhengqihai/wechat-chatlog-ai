@@ -1,0 +1,12 @@
+{
+  "name": "weq-web",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "@resvg/resvg-js-linux-arm64-gnu": "^2.6.2",
+    "@resvg/resvg-js-linux-x64-gnu": "^2.6.2",
+    "@resvg/resvg-js-win32-x64-msvc": "^2.6.2",
+    "ws": "^8.18.0"
+  }
+}
