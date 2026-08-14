@@ -13,7 +13,6 @@ echo 正在启动 Chatlog AI 服务...
 echo 请等待服务就绪后，浏览器访问：http://127.0.0.1:10392
 
 set "PYTHONPATH=%~dp0runtime\python-packages"
-set "WECHAT_TOOL_DATA_DIR=D:\app\wechat\Files\xwechat_files"
 set "PYTHONUTF8=1"
 set "PYTHONNOUSERSITE=1"
 set "PYTHONDONTWRITEBYTECODE=1"

@@ -184,7 +184,8 @@
         .ai-thread { flex: 1; min-height: 0; overflow: auto; padding: 15px; background: var(--surface); }
         .ai-turn { margin-bottom: 14px; }
         .ai-role { margin-bottom: 5px; color: var(--muted); font-size: 11px; font-weight: 700; }
-        .ai-bubble { padding: 10px 12px; border: 1px solid var(--border); border-radius: 7px; line-height: 1.65; overflow-wrap: anywhere; }
+        .ai-bubble { padding: 10px 12px; border: 1px solid var(--border); border-radius: 7px; line-height: 1.65; overflow-wrap: anywhere; position: relative; }
+        .copy-btn { position: absolute; top: 5px; right: 5px; background: #e0e0e0; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; padding: 3px 6px; }
         .ai-turn.user .ai-bubble { background: var(--blue-soft); border-color: #bdd5e8; }
         .ai-turn.assistant .ai-bubble { background: var(--surface-alt); }
         .ai-bubble h1, .ai-bubble h2, .ai-bubble h3 { margin: 12px 0 6px; font-size: 15px; letter-spacing: 0; }
@@ -460,6 +461,19 @@
         }
     }
 
+    async function saveHistory() {
+        if (!currentChat || !aiHistory.length) return;
+        try {
+            await fetch('/api/history', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ target_id: currentChat.id, history: aiHistory })
+            });
+        } catch (error) {
+            console.error('Failed to save history:', error);
+        }
+    }
+
     function setSourceStatus(text, state) {
         const element = document.getElementById('sourceStatus');
         element.className = 'source-status ' + state;
@@ -515,12 +529,29 @@
     async function selectChat(chatId) {
         currentChat = chats.find(function (chat) { return chat.id === chatId; });
         if (!currentChat) return;
-        aiHistory = [];
         renderChatList();
-        renderAiThread();
         document.getElementById('chatTitle').textContent = currentChat.name;
         document.getElementById('chatSubtitle').textContent = (currentPlatform === 'wechat' ? '微信' : 'QQ') + ' · ' + (currentChat.type === 'group' ? '群聊' : '私聊') + ' · 实时来源';
+        await loadHistory();
         await reloadMessages();
+    }
+
+    async function loadHistory() {
+        if (!currentChat) {
+            aiHistory = [];
+            renderAiThread();
+            return;
+        }
+        try {
+            const response = await fetch(`/api/history?target_id=${currentChat.id}`, { cache: 'no-store' });
+            const data = await readJson(response);
+            if (!response.ok || data.status !== 'success') throw new Error(apiError(data, '历史记录加载失败'));
+            aiHistory = data.history || [];
+        } catch (error) {
+            console.error('Failed to load history:', error);
+            aiHistory = [];
+        }
+        renderAiThread();
     }
 
     function getRangeConfig() {
@@ -683,6 +714,7 @@
             const data = await readJson(response);
             if (!response.ok || data.status !== 'success') throw new Error(apiError(data, 'DeepSeek 请求失败'));
             aiHistory.push({ role: 'assistant', content: data.summary || '' });
+            await saveHistory();
         } catch (error) {
             aiHistory.push({ role: 'assistant', content: '请求失败：' + (error.message || '未知错误'), error: true });
         } finally {
@@ -703,7 +735,8 @@
         thread.innerHTML = aiHistory.map(function (turn) {
             const roleName = turn.role === 'user' ? '你' : 'DeepSeek';
             const content = turn.role === 'assistant' ? renderMarkdown(turn.content) : '<p>' + escapeHtml(turn.content) + '</p>';
-            return '<div class="ai-turn ' + turn.role + '"><div class="ai-role">' + roleName + '</div><div class="ai-bubble"' + (turn.error ? ' style="color:var(--danger)"' : '') + '>' + content + '</div></div>';
+            const copyBtn = turn.role === 'assistant' ? `<button class="copy-btn" onclick="copyToClipboard(\'${escapeHtml(turn.content)}\')">复制</button>` : '';
+            return '<div class="ai-turn ' + turn.role + '"><div class="ai-role">' + roleName + '</div><div class="ai-bubble"' + (turn.error ? ' style="color:var(--danger)"' : '') + '>' + content + copyBtn + '</div></div>';
         }).join('') + (waiting ? '<div class="ai-turn assistant"><div class="ai-role">DeepSeek</div><div class="ai-bubble loading">正在分析 ' + visibleMessages.length + ' 条消息</div></div>' : '');
         thread.scrollTop = thread.scrollHeight;
     }
@@ -822,6 +855,14 @@
 
     function escapeHtml(value) {
         return String(value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+    }
+
+    function copyToClipboard(text) {
+        navigator.clipboard.writeText(text).then(function () {
+            alert('已复制到剪贴板');
+        }, function (err) {
+            alert('复制失败: ' + err);
+        });
     }
 
     async function loadAutoReplyConfig() {

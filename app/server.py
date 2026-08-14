@@ -490,6 +490,27 @@ async def summarize_api(data: dict = Body(...)):
         raise HTTPException(status_code=500, detail=f"调用 DeepSeek API 请求失败: {str(e)}")
 
 
+@app.get("/api/history")
+async def get_history_api(target_id: str = Query(...)):
+    runtime = load_runtime()
+    history = runtime.get("summaries", {}).get(target_id, [])
+    return {"status": "success", "history": history}
+
+
+@app.post("/api/history")
+async def save_history_api(data: dict = Body(...)):
+    target_id = data.get("target_id")
+    history = data.get("history")
+    if not target_id or history is None:
+        raise HTTPException(status_code=400, detail="缺少 target_id 或 history")
+    runtime = load_runtime()
+    if "summaries" not in runtime:
+        runtime["summaries"] = {}
+    runtime["summaries"][target_id] = history
+    save_runtime(runtime)
+    return {"status": "success"}
+
+
 def _deepseek_completion(messages: List[Dict], temperature: float = 0.7) -> str:
     config = load_config()
     api_key = config.get("api_key", "").strip()
