@@ -12,4 +12,10 @@ Chatlog AI 首次使用
 十、deepseek申请API-KEY地址：https://platform.deepseek.com/sign_in
 
 
+补充：现已支持多微信、qq互相切换，使用方式：
+- 电脑切到 B 微信
+- 双击 首次初始化.bat → 会打开微信/QQ 授权页 → 在页面里重新生成 B 的密钥
+- 关掉初始化窗口
+- 双击 启动Chatlog-AI.bat → 检测到 A、B 两个微信账号 → 控制台输入序号选择 B → 回车进入
+
 注意：授权必须由本机用户在微信或 QQ 的安全流程中确认，程序不能静默绕过。详细说明见 README.md。

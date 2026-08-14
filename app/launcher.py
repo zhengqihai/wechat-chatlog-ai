@@ -365,21 +365,137 @@ def has_qq_key():
     return False
 
 
+def list_wechat_accounts():
+    """返回微信后端当前可用的账号列表，每项含 account 与 name。"""
+    accounts = []
+    try:
+        with urllib.request.urlopen(
+            "http://127.0.0.1:%d/api/chat/accounts" % WECHAT_PORT, timeout=10
+        ) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        for item in data.get("accounts") or []:
+            if not isinstance(item, dict):
+                continue
+            account = str(item.get("account") or item.get("name") or "").strip()
+            if not account:
+                continue
+            accounts.append({"account": account, "name": str(item.get("name") or account)})
+    except Exception:
+        accounts = []
+
+    if not accounts:
+        # 回退：微信后端暂时拿不到账号时，扫描本地已导出的数据库目录。
+        seen = {}
+        databases_dir = WECHAT_OUTPUT_DIR / "databases"
+        if databases_dir.exists():
+            for directory in databases_dir.glob("*"):
+                if not directory.is_dir():
+                    continue
+                account = directory.name
+                seen[account] = {"account": account, "name": account}
+        accounts = list(seen.values())
+
+    unique = {}
+    for item in accounts:
+        unique.setdefault(item["account"], item)
+
+    # 去掉“同一账号 + 目录后缀”的重复项（如 wxid_x 与 wxid_x_e42e）。
+    result = []
+    for account, item in unique.items():
+        duplicated = any(
+            other != account and account.startswith(other + "_")
+            for other in unique
+        )
+        if not duplicated:
+            result.append(item)
+    return result
+
+
+def list_qq_accounts():
+    """返回 WeQ 已保存的 QQ 账号列表，每项含 uin 与 name。"""
+    account_dir = WEQ_APPDATA_DIR / "weq" / "config" / "accounts"
+    result = []
+    for path in sorted(account_dir.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        uin = str(data.get("uin") or "").strip()
+        if not uin:
+            continue
+        result.append({"uin": uin, "name": str(data.get("displayName") or uin)})
+    return result
+
+
+def _prompt_choice(label, options, current=""):
+    """在控制台让用户从多个账号候选中选择一个，返回选中的 value。"""
+    print("\n检测到多个%s账号：" % label)
+    for index, option in enumerate(options, 1):
+        marker = "（当前使用）" if option["value"] == current else ""
+        print("  %d. %s %s" % (index, option["display"], marker))
+    print("  直接回车：保持当前/默认，不做修改")
+    while True:
+        try:
+            raw = input("请选择%s账号（输入序号）：" % label).strip()
+        except (EOFError, KeyboardInterrupt):
+            return current
+        if not raw:
+            return current
+        try:
+            index = int(raw) - 1
+        except ValueError:
+            print("输入无效，请输入数字序号。")
+            continue
+        if 0 <= index < len(options):
+            return options[index]["value"]
+        print("输入超出范围，请重新输入。")
+
+
+def prompt_account_selection():
+    """检测多账号并让用户选择，把结果写入 config.json 供后端读取。"""
+    config = load_json(CONFIG_FILE, {"wechat_account": "", "qq_uin": ""})
+    changed = False
+
+    wechat_accounts = list_wechat_accounts()
+    if len(wechat_accounts) > 1:
+        current = str(config.get("wechat_account") or "").strip()
+        options = [
+            {"value": item["account"], "display": "%s（%s）" % (item["name"], item["account"])}
+            for item in wechat_accounts
+        ]
+        chosen = _prompt_choice("微信", options, current)
+        if chosen and chosen != current:
+            config["wechat_account"] = chosen
+            changed = True
+            print("已选择微信账号：%s" % chosen)
+
+    qq_accounts = list_qq_accounts()
+    if len(qq_accounts) > 1:
+        current = str(config.get("qq_uin") or "").strip()
+        options = [
+            {"value": item["uin"], "display": "%s（%s）" % (item["name"], item["uin"])}
+            for item in qq_accounts
+        ]
+        chosen = _prompt_choice("QQ", options, current)
+        if chosen and chosen != current:
+            config["qq_uin"] = chosen
+            changed = True
+            print("已选择 QQ 账号：%s" % chosen)
+
+    if changed:
+        save_json(CONFIG_FILE, config)
+
+
 def open_initialization_pages(runtime, status=None):
     wechat_ready, qq_ready = status or (has_wechat_key(), has_qq_key())
-    print("\n首次初始化状态：")
-    print("  微信：%s" % ("已完成，本次跳过" if wechat_ready else "未完成，将打开授权页面"))
-    print("  QQ：%s" % ("已完成，本次跳过" if qq_ready else "未完成，将打开授权页面"))
-    if not wechat_ready:
-        webbrowser.open("http://127.0.0.1:%d" % WECHAT_PORT)
-    if not qq_ready:
-        print("  QQ 页面访问令牌：%s" % runtime["weq_token"])
-        webbrowser.open("http://127.0.0.1:%d" % WEQ_PORT)
-    if wechat_ready and qq_ready:
-        print("两个平台都已完成本机授权，无需重复操作。")
-    else:
-        print("请只完成上面标记为“未完成”的平台。成功后先关闭本窗口，")
-        print("再双击“启动Chatlog-AI.bat”进入统一聊天页面。")
+    print("\n初始化 / 重新初始化：")
+    print("  微信：%s" % ("已存在账号密钥，本次会重新扫描/更新" if wechat_ready else "尚未生成密钥，请完成授权"))
+    print("  QQ：%s" % ("已存在账号密钥，本次会重新扫描/更新" if qq_ready else "尚未生成密钥，请完成授权"))
+    webbrowser.open("http://127.0.0.1:%d" % WECHAT_PORT)
+    print("  QQ 页面访问令牌：%s" % runtime["weq_token"])
+    webbrowser.open("http://127.0.0.1:%d" % WEQ_PORT)
+    print("请在打开的页面中完成或更新对应账号的密钥生成。")
+    print("完成后关闭本窗口，再双击“启动Chatlog-AI.bat”进入统一聊天页面。")
     return wechat_ready, qq_ready
 
 
@@ -417,8 +533,9 @@ def run(initialization=False):
         require_paths()
         runtime = load_runtime()
         initialization_status = (has_wechat_key(), has_qq_key()) if initialization else None
-        start_wechat = not initialization or not initialization_status[0]
-        start_qq = not initialization or not initialization_status[1]
+        # 正常启动与重新初始化都启动两个数据平台；重新初始化用于切换/新增账号。
+        start_wechat = True
+        start_qq = True
         node = resolve_node() if start_qq else ""
         ports = []
         if start_wechat:
@@ -432,15 +549,11 @@ def run(initialization=False):
         start_data_services(node, runtime, job, processes, logs, start_wechat, start_qq)
 
         if initialization:
-            print("\n首次初始化服务已启动。")
+            print("\n初始化 / 重新初始化服务已启动。")
             initialization_status = open_initialization_pages(runtime, initialization_status)
-            if all(initialization_status):
-                print("本窗口将在 3 秒后自动关闭。以后直接双击“启动Chatlog-AI.bat”。")
-                time.sleep(3)
-                stop_flag[0] = True
-            else:
-                print("\n此窗口关闭前请勿关闭正在授权的微信或 QQ 客户端。")
+            print("\n此窗口关闭前请勿关闭正在授权的微信或 QQ 客户端。")
         else:
+            prompt_account_selection()
             print("正在启动统一分析服务……")
             environment = os.environ.copy()
             environment["CHATLOG_ROOT_DIR"] = str(ROOT_DIR)
