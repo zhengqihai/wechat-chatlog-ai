@@ -734,12 +734,14 @@
             thread.innerHTML = '<div class="empty">选择会话后可生成分析或直接提问</div>';
             return;
         }
-        thread.innerHTML = aiHistory.map(function (turn) {
+        thread.innerHTML = aiHistory.map(function (turn, index) {
             const roleName = turn.role === 'user' ? '你' : 'DeepSeek';
             const content = turn.role === 'assistant' ? renderMarkdown(turn.content) : '<p>' + escapeHtml(turn.content) + '</p>';
-            const copyBtn = turn.role === 'assistant' ? `<button class="copy-btn" onclick="copyToClipboard(\'${escapeHtml(turn.content)}\')">复制</button>` : '';
+            const copyBtn = turn.role === 'assistant'
+                ? `<button class="copy-btn" onclick="copyHistoryItem(${index})">复制</button>`
+                : '';
             return '<div class="ai-turn ' + turn.role + '"><div class="ai-role">' + roleName + '</div><div class="ai-bubble"' + (turn.error ? ' style="color:var(--danger)"' : '') + '>' + content + copyBtn + '</div></div>';
-        }).join('') + (waiting ? '<div class="ai-turn assistant"><div class="ai-role">DeepSeek</div><div class="ai-bubble loading">正在分析 ' + visibleMessages.length + ' 条消息</div></div>' : '');
+        }).join('') + (waiting ? '...' : '');
         thread.scrollTop = thread.scrollHeight;
     }
 
@@ -860,11 +862,49 @@
     }
 
     function copyToClipboard(text) {
-        navigator.clipboard.writeText(text).then(function () {
-            alert('已复制到剪贴板');
-        }, function (err) {
-            alert('复制失败: ' + err);
-        });
+        const value = String(text == null ? '' : text);
+
+        function legacyCopy() {
+            const textarea = document.createElement('textarea');
+            textarea.value = value;
+            textarea.setAttribute('readonly', '');
+            textarea.style.position = 'fixed';
+            textarea.style.left = '-9999px';
+            document.body.appendChild(textarea);
+            textarea.select();
+            textarea.setSelectionRange(0, textarea.value.length);
+            let ok = false;
+            try {
+                ok = document.execCommand('copy');
+            } catch (e) {
+                ok = false;
+            }
+            document.body.removeChild(textarea);
+            return ok;
+        }
+
+        function notify(ok) {
+            if (ok) {
+                alert('已复制到剪贴板');
+            } else {
+                alert('复制失败，请手动复制');
+            }
+        }
+
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(value).then(
+                function () { notify(true); },
+                function () { notify(legacyCopy()); }
+            );
+        } else {
+            notify(legacyCopy());
+        }
+    }
+
+    function copyHistoryItem(index) {
+        const turn = aiHistory[index];
+        if (!turn || !turn.content) return;
+        copyToClipboard(turn.content);
     }
 
     async function loadAutoReplyConfig() {
