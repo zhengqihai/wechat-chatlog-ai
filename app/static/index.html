@@ -214,11 +214,13 @@
         .switch-row { display: flex; flex-wrap: wrap; gap: 18px; align-items: center; }
         .switch-row label { display: inline-flex; align-items: center; gap: 6px; font-weight: 400; }
         .form-group input[type="checkbox"] { width: auto; height: auto; margin: 0; }
-        .guard-target-list { max-height: 220px; overflow: auto; border: 1px solid var(--border-strong); border-radius: 6px; padding: 6px; }
-        .guard-target-item { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 4px; }
+        .guard-target-list { max-height: 320px; overflow: auto; border: 1px solid var(--border-strong); border-radius: 6px; padding: 6px; }
+        .guard-target-item { padding: 5px 6px; border-radius: 4px; }
         .guard-target-item:hover { background: #f3faf5; }
-        .guard-target-item label { display: inline-flex; align-items: center; gap: 6px; font-weight: 400; margin: 0; cursor: pointer; flex: 1; }
+        .guard-target-row { display: flex; align-items: center; gap: 8px; }
+        .guard-target-row label { display: inline-flex; align-items: center; gap: 6px; font-weight: 400; margin: 0; cursor: pointer; flex: 1; }
         .guard-target-item input[type="checkbox"] { width: auto; height: auto; margin: 0; }
+        .guard-target-prompt { width: 100%; height: 30px; margin-top: 6px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 6px; outline: none; font-size: 12px; box-sizing: border-box; }
         .guard-badge { font-size: 10px; padding: 1px 6px; border-radius: 999px; color: #fff; }
         .guard-badge.friend { background: var(--blue); }
         .guard-badge.group { background: #2ba471; }
@@ -936,9 +938,15 @@
             header.textContent = title + '（已选 ' + currentCount + '/' + maxCount + '）';
             container.appendChild(header);
             items.forEach(function (chat) {
-                const isChecked = !!selectedIds[chat.id];
+                const selected = selectedIds[chat.id];
+                const isChecked = !!selected;
+
+                const item = document.createElement('div');
+                item.className = 'guard-target-item';
+
                 const row = document.createElement('div');
-                row.className = 'guard-target-item';
+                row.className = 'guard-target-row';
+
                 const label = document.createElement('label');
                 const checkbox = document.createElement('input');
                 checkbox.type = 'checkbox';
@@ -951,12 +959,29 @@
                 const nameSpan = document.createElement('span');
                 nameSpan.textContent = chat.name || chat.id;
                 label.appendChild(nameSpan);
+
                 const badge = document.createElement('span');
                 badge.className = 'guard-badge ' + type;
                 badge.textContent = type === 'friend' ? '好友' : '群聊';
+
                 row.appendChild(label);
                 row.appendChild(badge);
-                container.appendChild(row);
+                item.appendChild(row);
+
+                const promptInput = document.createElement('input');
+                promptInput.type = 'text';
+                promptInput.className = 'guard-target-prompt';
+                promptInput.dataset.id = chat.id;
+                promptInput.placeholder = '单独提示词（可选，留空用默认）';
+                promptInput.value = (selected && selected.prompt) ? selected.prompt : '';
+                promptInput.style.display = isChecked ? 'block' : 'none';
+                item.appendChild(promptInput);
+
+                checkbox.addEventListener('change', function () {
+                    promptInput.style.display = checkbox.checked ? 'block' : 'none';
+                });
+
+                container.appendChild(item);
             });
         }
 
@@ -965,10 +990,19 @@
     }
 
     function collectGuardTargets() {
+        const prompts = {};
+        document.querySelectorAll('#guardTargetList input.guard-target-prompt').forEach(function (input) {
+            prompts[input.dataset.id] = input.value.trim();
+        });
         const targets = [];
         document.querySelectorAll('#guardTargetList input[type=checkbox]').forEach(function (cb) {
             if (cb.checked) {
-                targets.push({ id: cb.dataset.id, name: cb.dataset.name, type: cb.dataset.type });
+                targets.push({
+                    id: cb.dataset.id,
+                    name: cb.dataset.name,
+                    type: cb.dataset.type,
+                    prompt: prompts[cb.dataset.id] || ''
+                });
             }
         });
         return targets;
