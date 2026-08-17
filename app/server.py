@@ -96,10 +96,65 @@ AUTO_REPLY_DEFAULTS = {
     },
 }
 
+# 自动回复配置按微信账号隔离存放：每个账号一个独立 JSON 文件，
+# 与根目录 config.json 分开，避免多账号切换时 prompt/守护对象串号。
+AUTO_REPLY_DIR = ROOT_DIR / "data" / "auto_reply"
+
+
+def _auto_reply_account_key() -> str:
+    """当前微信账号标识；未显式选择账号时归入 default。"""
+    config = load_config()
+    account = str(config.get("wechat_account") or "").strip()
+    return account or "default"
+
+
+def _auto_reply_file_path(account: str) -> Path:
+    safe = "".join(ch for ch in account if ch.isalnum() or ch in "-_")
+    if not safe:
+        safe = "default"
+    return AUTO_REPLY_DIR / (safe + ".json")
+
+
+def _read_json_file(path: Path) -> dict:
+    try:
+        with path.open("r", encoding="utf-8") as file:
+            data = json.load(file)
+            return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_json_file(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("w", encoding="utf-8", newline="\n") as file:
+        json.dump(data, file, ensure_ascii=False, indent=2)
+        file.write("\n")
+    os.replace(str(temporary), str(path))
+
+
+def _load_auto_reply_raw() -> dict:
+    """读取当前账号的自动回复配置，并迁移旧版扁平数据（仅归入 default 账号）。"""
+    account = _auto_reply_account_key()
+    path = _auto_reply_file_path(account)
+    if path.exists():
+        return _read_json_file(path)
+
+    # 旧版把配置放在 runtime.json 的 auto_reply 字段里，且无法判断属于哪个账号。
+    # 仅在“未选择账号”的 default 场景迁移，避免把旧 prompt 错误套到某个多账号上。
+    if account == "default":
+        runtime = load_runtime()
+        legacy = runtime.get("auto_reply")
+        if isinstance(legacy, dict) and legacy:
+            _write_json_file(path, legacy)
+            runtime.pop("auto_reply", None)
+            save_runtime(runtime)
+            return legacy
+    return {}
+
 
 def load_auto_reply() -> dict:
-    runtime = load_runtime()
-    stored = runtime.get("auto_reply") if isinstance(runtime.get("auto_reply"), dict) else {}
+    stored = _load_auto_reply_raw()
     merged = json.loads(json.dumps(AUTO_REPLY_DEFAULTS))
     merged.update(stored)
     stored_hotkeys = stored.get("hotkeys") if isinstance(stored.get("hotkeys"), dict) else {}
@@ -108,14 +163,14 @@ def load_auto_reply() -> dict:
 
 
 def save_auto_reply(settings: dict) -> dict:
-    runtime = load_runtime()
-    current = runtime.get("auto_reply") if isinstance(runtime.get("auto_reply"), dict) else {}
+    account = _auto_reply_account_key()
+    path = _auto_reply_file_path(account)
+    current = _load_auto_reply_raw()
     for key, value in settings.items():
         if value is None:
             continue
         current[key] = value
-    runtime["auto_reply"] = current
-    save_runtime(runtime)
+    _write_json_file(path, current)
     return load_auto_reply()
 
 
@@ -236,13 +291,14 @@ class AutoReplyEngine:
         previous = self._signatures.get(target_id)
         if signature is not None and signature != previous:
             self._signatures[target_id] = signature
-            self._reply_to(target_name, messages, config)
+            self._reply_to(target, target_name, messages, config)
 
-    def _reply_to(self, target_name: str, messages: List[Dict], config: Dict) -> None:
+    def _reply_to(self, target: Dict, target_name: str, messages: List[Dict], config: Dict) -> None:
         context_count = max(1, int(config.get("context_count") or 80))
         reply_prompt = str(config.get("reply_prompt") or "").strip()
+        inner_prompt = str(target.get("prompt") or "").strip()
         try:
-            reply = generate_reply_text(target_name, messages, context_count, reply_prompt)
+            reply = generate_reply_text(target_name, messages, context_count, reply_prompt, inner_prompt)
         except HTTPException as exc:
             self._log("为「%s」生成回复失败：%s" % (target_name, exc.detail), level="error")
             return
@@ -533,8 +589,13 @@ def _deepseek_completion(messages: List[Dict], temperature: float = 0.7) -> str:
 
 
 def generate_reply_text(target_name: str, messages: List[Dict], context_count: int,
-                        reply_prompt: str) -> str:
-    """根据上下文生成下一条回复正文（自动回复引擎与测试接口共用）。"""
+                        reply_prompt: str, inner_prompt: str = "") -> str:
+    """根据上下文生成下一条回复正文（自动回复引擎与测试接口共用）。
+
+    回复提示词固定为两层：
+    - 外层 reply_prompt：全局主体/身份，为空时用默认身份。
+    - 内层 inner_prompt：单个会话的精细化口吻，为空时用默认指令。
+    """
     recent = messages[-context_count:] if messages else []
     text_lines = []
     for message in recent:
@@ -545,11 +606,15 @@ def generate_reply_text(target_name: str, messages: List[Dict], context_count: i
         ))
     chat_text = "\n".join(text_lines)
 
-    system_prompt = reply_prompt or (
-        "你是聊天记录中的“我”本人。请根据最近的对话上下文，生成一条自然、简洁、"
-        "符合“我”语气和风格的下一条回复。只输出回复正文本身，不要任何解释、引号、"
-        "“回复：”等前缀或额外说明。"
+    default_outer = "你是聊天记录中的“我”本人。"
+    default_inner = (
+        "请根据最近的对话上下文，生成一条自然、简洁、符合“我”语气和风格的下一条回复。"
+        "只输出回复正文本身，不要任何解释、引号、“回复：”等前缀或额外说明。"
     )
+    outer_prompt = str(reply_prompt or "").strip() or default_outer
+    inner_prompt = str(inner_prompt or "").strip() or default_inner
+    system_prompt = "%s\n\n%s" % (outer_prompt, inner_prompt)
+
     user_content = (
         "对话对象：%s\n最近 %d 条消息：\n%s\n\n请直接给出下一条回复：" %
         (target_name, len(recent), chat_text)
@@ -571,7 +636,8 @@ async def reply_generate_api(data: dict = Body(...)):
         context_count = 0
     context_count = max(1, context_count) if context_count else 80
     custom_prompt = str(data.get("reply_prompt") or "").strip()
-    reply = generate_reply_text(target_name, messages, context_count, custom_prompt)
+    inner_prompt = str(data.get("inner_prompt") or "").strip()
+    reply = generate_reply_text(target_name, messages, context_count, custom_prompt, inner_prompt)
     return {"status": "success", "reply": reply}
 
 
@@ -633,7 +699,8 @@ def normalize_guard_targets(value) -> List[Dict]:
         if target_id in seen_ids:
             continue
         seen_ids.add(target_id)
-        cleaned.append({"id": target_id, "name": name, "type": kind})
+        prompt = str(item.get("prompt") or "").strip()
+        cleaned.append({"id": target_id, "name": name, "type": kind, "prompt": prompt})
     friends = sum(1 for target in cleaned if target["type"] == "friend")
     groups = sum(1 for target in cleaned if target["type"] == "group")
     if friends > GUARD_MAX_FRIENDS or groups > GUARD_MAX_GROUPS:
