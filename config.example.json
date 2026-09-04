@@ -1,5 +1,33 @@
 {
-  "api_key": "请填写你自己的 DeepSeek API Key",
+  "port": 1811115,
+  "wechat_api": "http://127.0.0.1:10xx2",
+  "wechat_account": "",
+  "weq_url": "http://127.0.0.1:7xx0",
+  "qq_uin": "",
+  "active_provider": "prov-88xxxxx857",
+  "providers": [
+    {
+      "id": "prov-54xxxx4",
+      "provider_type": "deepseek",
+      "name": "DeepSeek",
+      "base_url": "https://api.deepseek.com",
+      "model": "deepseek-v4-flash",
+      "api_key": "sk-bxxxxxxxxxxxxxxxxxxxxxxxf",
+      "balance_path": "/user/balance",
+      "balance_parser": "deepseek"
+    },
+    {
+      "id": "prov-88xxxxx857",
+      "provider_type": "deepseek",
+      "name": "DeepSeek-账号2",
+      "base_url": "https://api.deepseek.com",
+      "model": "deepseek-chat",
+      "api_key": "sk-5xxxxxxxxxxxxxxxxxxxxxf",
+      "balance_path": "/user/balance",
+      "balance_parser": "deepseek"
+    }
+  ],
+  "api_key": "",
   "base_url": "https://api.deepseek.com",
-  "model": "deepseek-chat"
+  "model": "deepseek-v4-flash"
 }
