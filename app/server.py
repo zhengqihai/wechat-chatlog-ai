@@ -4,6 +4,7 @@
 import os
 import json
 import asyncio
+import secrets
 import threading
 import requests
 import time
@@ -44,14 +45,13 @@ app.add_middleware(
 
 def load_config() -> dict:
     default_config = {
-        "api_key": "",
-        "base_url": "https://api.deepseek.com",
-        "model": "deepseek-chat",
         "port": 18765,
         "wechat_api": "http://127.0.0.1:10392",
         "wechat_account": "",
         "weq_url": "http://127.0.0.1:7690",
-        "qq_uin": ""
+        "qq_uin": "",
+        "active_provider": "",
+        "providers": [],
     }
     if CONFIG_FILE.exists():
         try:
@@ -61,6 +61,176 @@ def load_config() -> dict:
         except Exception:
             pass
     return default_config
+
+
+def save_config(config: dict) -> None:
+    CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temporary = CONFIG_FILE.with_suffix(CONFIG_FILE.suffix + ".tmp")
+    with temporary.open("w", encoding="utf-8", newline="\n") as file:
+        json.dump(config, file, ensure_ascii=False, indent=2)
+        file.write("\n")
+    os.replace(str(temporary), str(CONFIG_FILE))
+
+
+# 国内主流模型供应商预设；余额接口仅在厂商提供标准 REST 接口时配置。
+PROVIDER_PRESETS = {
+    "deepseek": {
+        "name": "DeepSeek",
+        "base_url": "https://api.deepseek.com",
+        "model": "deepseek-chat",
+        "balance_path": "/user/balance",
+        "balance_parser": "deepseek",
+    },
+    "kimi": {
+        "name": "Kimi（Moonshot）",
+        "base_url": "https://api.moonshot.cn/v1",
+        "model": "moonshot-v1-8k",
+        "balance_path": "/users/me/balance",
+        "balance_parser": "moonshot",
+    },
+    "zhipu": {
+        "name": "智谱 GLM",
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "model": "glm-4-flash",
+        "balance_path": None,
+        "balance_parser": None,
+    },
+    "qwen": {
+        "name": "通义千问（DashScope）",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "model": "qwen-plus",
+        "balance_path": None,
+        "balance_parser": None,
+    },
+    "custom": {
+        "name": "自定义（OpenAI 兼容）",
+        "base_url": "",
+        "model": "",
+        "balance_path": None,
+        "balance_parser": None,
+    },
+}
+
+
+def list_providers() -> list:
+    config = load_config()
+    providers = config.get("providers") or []
+    return [item for item in providers if isinstance(item, dict)]
+
+
+def get_active_provider() -> dict:
+    config = load_config()
+    providers = config.get("providers") or []
+    active_id = str(config.get("active_provider") or "").strip()
+    if active_id and any(str(item.get("id") or "") == active_id for item in providers):
+        pass
+    elif providers:
+        active_id = str(providers[0].get("id") or "").strip()
+    else:
+        return {}
+    for item in providers:
+        if str(item.get("id") or "") == active_id:
+            return item
+    return {}
+
+
+def _mask_api_key(api_key) -> str:
+    key = str(api_key or "").strip()
+    if not key:
+        return ""
+    if len(key) <= 8:
+        return key[:2] + "***"
+    return key[:4] + "****" + key[-4:]
+
+
+def _extract_api_error(data) -> str:
+    """从不同厂商的响应体中提取可读错误信息。"""
+    if not isinstance(data, dict):
+        return str(data)
+    error = data.get("error")
+    if isinstance(error, dict):
+        return str(error.get("message") or error)
+    if isinstance(error, str) and error:
+        return error
+    return str(data.get("message") or data)
+
+
+def _chat_completion(base_url: str, model: str, api_key: str, messages: List[Dict],
+                     temperature: float = 0.7, timeout: int = 120) -> str:
+    """调用 OpenAI 兼容的 /chat/completions，返回助手正文。"""
+    url = base_url.rstrip("/") + "/chat/completions"
+    payload = {"model": model, "messages": messages, "temperature": temperature}
+    headers = {"Authorization": "Bearer %s" % api_key, "Content-Type": "application/json"}
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=timeout)
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail="无法连接模型服务：%s" % exc) from exc
+    if response.status_code >= 400:
+        try:
+            body = response.json()
+        except ValueError:
+            body = response.text
+        raise HTTPException(
+            status_code=502,
+            detail="模型 API 错误（HTTP %s）：%s" % (response.status_code, _extract_api_error(body)),
+        )
+    try:
+        res_json = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="模型 API 返回无效数据：%s" % exc) from exc
+    if "choices" in res_json and res_json["choices"]:
+        return str(res_json["choices"][0].get("message", {}).get("content") or "")
+    raise HTTPException(status_code=502, detail="模型 API 返回异常：%s" % _extract_api_error(res_json))
+
+
+def _query_balance(provider: dict) -> dict:
+    """按供应商预设的余额接口解析账户余额。"""
+    base_url = str(provider.get("base_url") or "").rstrip("/")
+    api_key = str(provider.get("api_key") or "").strip()
+    balance_path = str(provider.get("balance_path") or "").strip()
+    parser = str(provider.get("balance_parser") or "").strip()
+    if not base_url or not api_key or not balance_path:
+        return {"available": False, "message": "该供应商未配置余额查询接口"}
+
+    url = base_url + balance_path
+    headers = {"Authorization": "Bearer %s" % api_key}
+    try:
+        response = requests.get(url, headers=headers, timeout=30)
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail="余额接口请求失败：%s" % exc) from exc
+    if response.status_code >= 400:
+        try:
+            body = response.json()
+        except ValueError:
+            body = response.text
+        raise HTTPException(
+            status_code=502,
+            detail="余额接口错误（HTTP %s）：%s" % (response.status_code, _extract_api_error(body)),
+        )
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="余额接口返回无效数据：%s" % exc) from exc
+
+    if parser == "deepseek":
+        if not data.get("is_available"):
+            return {"available": False, "message": str(data.get("message") or "账户不可用")}
+        infos = data.get("balance_infos") or []
+        parts = ["%s %s" % (info.get("total_balance", "0"), info.get("currency", "")) for info in infos]
+        return {"available": True, "text": "；".join(parts) or "0"}
+    if parser == "moonshot":
+        if data.get("code") != 0:
+            return {"available": False, "message": str(data.get("message") or data)}
+        detail = data.get("data") or {}
+        available = detail.get("available_balance")
+        return {
+            "available": True,
+            "available_balance": available,
+            "voucher_balance": detail.get("voucher_balance"),
+            "cash_balance": detail.get("cash_balance"),
+            "text": "可用余额 ¥%s" % available,
+        }
+    return {"available": True, "text": str(data)}
 
 
 def load_runtime() -> dict:
@@ -409,11 +579,149 @@ def get_real_qq_messages(target_id: str, is_group: bool = True, limit: int = 50)
 
 @app.get("/api/config")
 async def get_config_api():
-    config = load_config()
+    provider = get_active_provider()
     return {
-        "has_key": bool(config["api_key"]),
-        "model": config.get("model", "deepseek-chat")
+        "has_key": bool(provider and str(provider.get("api_key") or "").strip()),
+        "model": provider.get("model", ""),
+        "provider_name": provider.get("name", ""),
     }
+
+
+@app.get("/api/providers")
+async def list_providers_api():
+    config = load_config()
+    active_id = str(get_active_provider().get("id") or "").strip()
+    providers = []
+    for item in list_providers():
+        providers.append({
+            "id": item.get("id"),
+            "name": item.get("name"),
+            "provider_type": item.get("provider_type"),
+            "base_url": item.get("base_url"),
+            "model": item.get("model"),
+            "api_key_masked": _mask_api_key(item.get("api_key")),
+            "balance_supported": bool(item.get("balance_path")),
+            "active": str(item.get("id") or "") == active_id,
+        })
+    return {"status": "success", "providers": providers, "active_id": active_id, "presets": PROVIDER_PRESETS}
+
+
+@app.post("/api/providers/validate")
+async def validate_provider_api(data: dict = Body(...)):
+    base_url = str(data.get("base_url") or "").strip().rstrip("/")
+    model = str(data.get("model") or "").strip()
+    api_key = str(data.get("api_key") or "").strip()
+    if not base_url or not model or not api_key:
+        raise HTTPException(status_code=400, detail="base_url、model、api_key 均不能为空")
+    _chat_completion(
+        base_url, model, api_key,
+        [{"role": "user", "content": "你好，请回复“ok”。"}],
+        temperature=0.0, timeout=60,
+    )
+    return {"status": "success", "message": "API Key 验证通过"}
+
+
+@app.post("/api/providers")
+async def save_provider_api(data: dict = Body(...)):
+    provider_type = str(data.get("provider_type") or "custom").strip()
+    base_url = str(data.get("base_url") or "").strip().rstrip("/")
+    model = str(data.get("model") or "").strip()
+    name = str(data.get("name") or "").strip()
+    api_key = str(data.get("api_key") or "").strip()
+    if not base_url or not model:
+        raise HTTPException(status_code=400, detail="base_url 与 model 不能为空")
+
+    preset = PROVIDER_PRESETS.get(provider_type) or {}
+    balance_path = preset.get("balance_path")
+    balance_parser = preset.get("balance_parser")
+    if data.get("balance_path") is not None:
+        balance_path = str(data.get("balance_path") or "").strip() or None
+    if data.get("balance_parser") is not None:
+        balance_parser = str(data.get("balance_parser") or "").strip() or None
+    if not name:
+        name = str(preset.get("name") or provider_type)
+
+    providers = list_providers()
+    provider_id = str(data.get("id") or "").strip()
+    if provider_id:
+        existing = next((item for item in providers if str(item.get("id") or "") == provider_id), None)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="供应商不存在")
+        if not api_key:
+            api_key = str(existing.get("api_key") or "").strip()
+        if not api_key:
+            raise HTTPException(status_code=400, detail="api_key 不能为空")
+        existing.update({
+            "provider_type": provider_type,
+            "name": name,
+            "base_url": base_url,
+            "model": model,
+            "api_key": api_key,
+            "balance_path": balance_path,
+            "balance_parser": balance_parser,
+        })
+    else:
+        if not api_key:
+            raise HTTPException(status_code=400, detail="api_key 不能为空")
+        provider_id = "prov-" + secrets.token_hex(5)
+        providers.append({
+            "id": provider_id,
+            "provider_type": provider_type,
+            "name": name,
+            "base_url": base_url,
+            "model": model,
+            "api_key": api_key,
+            "balance_path": balance_path,
+            "balance_parser": balance_parser,
+        })
+
+    config = load_config()
+    config["providers"] = providers
+    if not str(config.get("active_provider") or "").strip() or not any(
+        str(item.get("id") or "") == str(config.get("active_provider") or "") for item in providers
+    ):
+        config["active_provider"] = provider_id
+    save_config(config)
+    return {"status": "success", "id": provider_id}
+
+
+@app.post("/api/providers/activate")
+async def activate_provider_api(data: dict = Body(...)):
+    provider_id = str(data.get("id") or "").strip()
+    if not provider_id:
+        raise HTTPException(status_code=400, detail="缺少 id")
+    providers = list_providers()
+    if not any(str(item.get("id") or "") == provider_id for item in providers):
+        raise HTTPException(status_code=404, detail="供应商不存在")
+    config = load_config()
+    config["active_provider"] = provider_id
+    save_config(config)
+    return {"status": "success"}
+
+
+@app.delete("/api/providers/{provider_id}")
+async def delete_provider_api(provider_id: str):
+    providers = list_providers()
+    remaining = [item for item in providers if str(item.get("id") or "") != provider_id]
+    if len(remaining) == len(providers):
+        raise HTTPException(status_code=404, detail="供应商不存在")
+    config = load_config()
+    config["providers"] = remaining
+    if str(config.get("active_provider") or "") == provider_id:
+        config["active_provider"] = str(remaining[0].get("id") or "") if remaining else ""
+    save_config(config)
+    return {"status": "success"}
+
+
+@app.get("/api/providers/balance")
+async def provider_balance_api():
+    provider = get_active_provider()
+    if not provider:
+        raise HTTPException(status_code=400, detail="尚未配置任何模型供应商")
+    if not provider.get("balance_path"):
+        return {"status": "success", "supported": False, "message": "该供应商暂不支持余额查询"}
+    balance = _query_balance(provider)
+    return {"status": "success", "supported": True, "balance": balance}
 
 
 @app.get("/api/chats")
@@ -455,11 +763,14 @@ async def get_messages_api(
 
 @app.post("/api/summarize")
 async def summarize_api(data: dict = Body(...)):
-    config = load_config()
-    api_key = config.get("api_key", "").strip()
-    
+    provider = get_active_provider()
+    api_key = str(provider.get("api_key") or "").strip()
     if not api_key:
-        raise HTTPException(status_code=400, detail="请编辑根目录 config.json 配置 DeepSeek API Key，然后重新启动。")
+        raise HTTPException(status_code=400, detail="请先在页面中配置模型供应商与 API Key。")
+    base_url = str(provider.get("base_url") or "").strip().rstrip("/")
+    model = str(provider.get("model") or "deepseek-chat").strip()
+    if not base_url or not model:
+        raise HTTPException(status_code=400, detail="当前模型供应商缺少 base_url 或 model，请重新配置。")
 
     target_name = data.get("target_name", "未知对话")
     messages = data.get("messages", [])
@@ -484,7 +795,6 @@ async def summarize_api(data: dict = Body(...)):
         time_str = m.get("time", "")
         content = m.get("content", "")
         text_lines.append(f"[{time_str}] {sender}: {content}")
-    
     chat_text = "\n".join(text_lines)
 
     if summary_type == "meeting":
@@ -495,9 +805,6 @@ async def summarize_api(data: dict = Body(...)):
         system_prompt = "你是一个信息分析专家。请提炼以下聊天记录中的【核心讨论热点与话题】，按关注度从高到低排列，并给出简要总结。"
     else:
         system_prompt = "你是一个智能聊天助手。请对以下聊天记录提供简洁清晰的 Markdown 格式结构化总结，包含核心议题、关键观点及待办项。"
-
-    base_url = config.get("base_url", "https://api.deepseek.com").rstrip("/")
-    model = config.get("model", "deepseek-chat")
 
     history = []
     for item in (data.get("history") or [])[-10:]:
@@ -515,35 +822,12 @@ async def summarize_api(data: dict = Body(...)):
         f"本次要求：{user_request}"
     )
 
-    payload = {
-        "model": model,
-        "messages": [{"role": "system", "content": system_prompt}] + history + [
-            {"role": "user", "content": user_content}
-        ],
-        "temperature": 0.3
-    }
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-
-    try:
-        url = f"{base_url}/chat/completions"
-        resp = requests.post(url, json=payload, headers=headers, timeout=120)
-        resp.raise_for_status()
-        res_json = resp.json()
-        
-        if "choices" in res_json and len(res_json["choices"]) > 0:
-            summary_content = res_json["choices"][0]["message"]["content"]
-            return {"status": "success", "summary": summary_content, "analyzed_count": len(messages)}
-        else:
-            err_msg = res_json.get("error", {}).get("message") or str(res_json)
-            raise HTTPException(status_code=500, detail=f"DeepSeek API 返回错误: {err_msg}")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"调用 DeepSeek API 请求失败: {str(e)}")
+    summary_content = _chat_completion(
+        base_url, model, api_key,
+        [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": user_content}],
+        temperature=0.3,
+    )
+    return {"status": "success", "summary": summary_content, "analyzed_count": len(messages)}
 
 
 @app.get("/api/history")
@@ -567,25 +851,16 @@ async def save_history_api(data: dict = Body(...)):
     return {"status": "success"}
 
 
-def _deepseek_completion(messages: List[Dict], temperature: float = 0.7) -> str:
-    config = load_config()
-    api_key = config.get("api_key", "").strip()
+def _model_completion(messages: List[Dict], temperature: float = 0.7) -> str:
+    provider = get_active_provider()
+    api_key = str(provider.get("api_key") or "").strip()
     if not api_key:
-        raise HTTPException(status_code=400, detail="请编辑根目录 config.json 配置 DeepSeek API Key，然后重新启动。")
-    base_url = config.get("base_url", "https://api.deepseek.com").rstrip("/")
-    model = config.get("model", "deepseek-chat")
-    payload = {"model": model, "messages": messages, "temperature": temperature}
-    headers = {"Authorization": "Bearer %s" % api_key, "Content-Type": "application/json"}
-    try:
-        response = requests.post(base_url + "/chat/completions", json=payload, headers=headers, timeout=120)
-        response.raise_for_status()
-        res_json = response.json()
-    except (requests.RequestException, ValueError) as exc:
-        raise HTTPException(status_code=500, detail="调用 DeepSeek API 请求失败：%s" % exc) from exc
-    if "choices" in res_json and res_json["choices"]:
-        return res_json["choices"][0]["message"]["content"]
-    err = res_json.get("error", {}).get("message") or str(res_json)
-    raise HTTPException(status_code=500, detail="DeepSeek API 返回错误：%s" % err)
+        raise HTTPException(status_code=400, detail="请先在页面中配置模型供应商与 API Key。")
+    base_url = str(provider.get("base_url") or "").strip().rstrip("/")
+    model = str(provider.get("model") or "deepseek-chat").strip()
+    if not base_url or not model:
+        raise HTTPException(status_code=400, detail="当前模型供应商缺少 base_url 或 model，请重新配置。")
+    return _chat_completion(base_url, model, api_key, messages, temperature=temperature)
 
 
 def generate_reply_text(target_name: str, messages: List[Dict], context_count: int,
@@ -619,7 +894,7 @@ def generate_reply_text(target_name: str, messages: List[Dict], context_count: i
         "对话对象：%s\n最近 %d 条消息：\n%s\n\n请直接给出下一条回复：" %
         (target_name, len(recent), chat_text)
     )
-    return _deepseek_completion(
+    return _model_completion(
         [{"role": "system", "content": system_prompt},
          {"role": "user", "content": user_content}],
         temperature=0.7,

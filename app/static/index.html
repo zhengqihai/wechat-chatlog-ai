@@ -225,6 +225,15 @@
         .guard-badge.friend { background: var(--blue); }
         .guard-badge.group { background: #2ba471; }
 
+        .provider-list { max-height: 260px; overflow: auto; border: 1px solid var(--border-strong); border-radius: 6px; padding: 6px; }
+        .provider-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 6px; border-radius: 5px; }
+        .provider-item:hover { background: #f3faf5; }
+        .provider-item.active { background: var(--green-soft); }
+        .provider-info { min-width: 0; flex: 1; }
+        .provider-title { font-weight: 700; }
+        .provider-sub { margin-top: 3px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+        .provider-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+
         @media (max-width: 1180px) {
             .app-shell { grid-template-columns: 280px minmax(330px, 1fr) 8px 380px; }
             .pane-header { align-items: flex-start; flex-direction: column; }
@@ -314,10 +323,11 @@
     <section class="ai-pane">
         <header class="pane-header">
             <div class="pane-title">
-                <h2>DeepSeek 分析</h2>
-                <p id="modelStatus">尚未读取模型配置</p>
+                <h2>AI 分析</h2>
+                <p id="modelStatus">尚未配置模型</p>
             </div>
             <div style="display:flex; align-items:center; gap:6px;">
+                <button class="btn" type="button" title="模型与 API Key 设置" aria-label="模型设置" onclick="openModelModal()">模型设置</button>
                 <button class="icon-btn" type="button" title="自动回复设置" aria-label="自动回复设置" onclick="openAutoReplyModal()">⚙</button>
                 <button id="runButton" class="btn btn-primary" type="button" onclick="runPreset()">生成分析</button>
             </div>
@@ -336,10 +346,14 @@
             <div class="analysis-meta">
                 <span id="autoReplyStatus" style="color:var(--muted)">自动回复：未启用</span>
             </div>
+            <div class="analysis-meta">
+                <span id="balanceStatus" style="color:var(--muted)">余额：未查询</span>
+                <button class="btn" type="button" onclick="refreshBalance()">刷新余额</button>
+            </div>
         </div>
         <div id="aiThread" class="ai-thread"><div class="empty">选择会话后可生成分析或直接提问</div></div>
         <div class="prompt-bar">
-            <input id="promptInput" type="text" placeholder="向 DeepSeek 提问" onkeydown="handlePromptKey(event)">
+            <input id="promptInput" type="text" placeholder="向 AI 提问" onkeydown="handlePromptKey(event)">
             <button id="sendButton" class="btn btn-primary" type="button" onclick="sendCustomPrompt()">发送</button>
         </div>
     </section>
@@ -405,6 +419,52 @@
     </div>
 </div>
 
+<div id="modelModal" class="modal-layer">
+    <div class="modal" style="width:min(640px, 100%);">
+        <div class="modal-header">
+            <h2>模型与 API Key 设置</h2>
+            <button class="icon-btn" type="button" title="关闭" aria-label="关闭" onclick="closeModelModal()">×</button>
+        </div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label>已配置的模型供应商</label>
+                <div id="providerList" class="provider-list"></div>
+            </div>
+            <div class="form-group">
+                <label style="margin-bottom:10px;">添加 / 修改供应商</label>
+                <div class="form-group">
+                    <label>供应商类型</label>
+                    <select id="mpType" class="select-field" style="width:100%;height:38px;" onchange="onProviderTypeChange()"></select>
+                </div>
+                <div class="form-group">
+                    <label>显示名称</label>
+                    <input type="text" id="mpName" placeholder="例如：我的 DeepSeek">
+                </div>
+                <div class="form-group">
+                    <label>Base URL</label>
+                    <input type="text" id="mpBaseUrl" placeholder="https://api.deepseek.com">
+                </div>
+                <div class="form-group">
+                    <label>模型名</label>
+                    <input type="text" id="mpModel" placeholder="deepseek-chat">
+                </div>
+                <div class="form-group">
+                    <label>API Key</label>
+                    <input type="password" id="mpApiKey" placeholder="sk-...">
+                </div>
+                <div style="display:flex; gap:8px; align-items:center;">
+                    <button class="btn" type="button" id="mpValidateBtn" onclick="validateProvider()">验证 Key</button>
+                    <button class="btn btn-primary" type="button" id="mpSaveBtn" onclick="saveProvider()" disabled>添加 / 保存</button>
+                </div>
+                <div id="mpValidateMsg" class="form-hint"></div>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn" type="button" onclick="closeModelModal()">关闭</button>
+        </div>
+    </div>
+</div>
+
 <script>
     let currentPlatform = 'wechat';
     let chats = [];
@@ -416,16 +476,22 @@
     let messageLoading = false;
     let autoReplyConfig = null;
     let guardChatOptions = [];
+    let providerPresets = {};
+    let providers = [];
+    let activeProviderId = null;
 
     window.addEventListener('load', async function () {
         setupPaneSplitter();
         toggleRangeControls();
-        await loadConfigStatus();
+        await loadProviders();
         await loadAutoReplyConfig();
         await loadChats(true);
+        refreshBalance();
+        if (!activeProviderId) openModelModal();
         window.setInterval(function () { loadChats(false); }, 10000);
         window.setInterval(function () { refreshMessages(); }, 5000);
         window.setInterval(refreshAutoReplyStatus, 3000);
+        window.setInterval(refreshBalance, 60000);
     });
 
     function switchPlatform(platform) {
@@ -714,7 +780,7 @@
                 })
             });
             const data = await readJson(response);
-            if (!response.ok || data.status !== 'success') throw new Error(apiError(data, 'DeepSeek 请求失败'));
+            if (!response.ok || data.status !== 'success') throw new Error(apiError(data, '模型请求失败'));
             aiHistory.push({ role: 'assistant', content: data.summary || '' });
             await saveHistory();
         } catch (error) {
@@ -735,7 +801,7 @@
             return;
         }
         thread.innerHTML = aiHistory.map(function (turn, index) {
-            const roleName = turn.role === 'user' ? '你' : 'DeepSeek';
+            const roleName = turn.role === 'user' ? '你' : assistantName();
             const content = turn.role === 'assistant' ? renderMarkdown(turn.content) : '<p>' + escapeHtml(turn.content) + '</p>';
             const copyBtn = turn.role === 'assistant'
                 ? `<button class="copy-btn" onclick="copyHistoryItem(${index})">复制</button>`
@@ -800,16 +866,206 @@
         });
     }
 
-    async function loadConfigStatus() {
+    async function loadProviders() {
         try {
-            const response = await fetch('/api/config', { cache: 'no-store' });
+            const response = await fetch('/api/providers', { cache: 'no-store' });
             const data = await readJson(response);
-            document.getElementById('modelStatus').textContent = data.has_key
-                ? (data.model || 'deepseek-chat')
-                : '未配置 Key，请编辑根目录 config.json 后重启';
+            if (!response.ok || data.status !== 'success') throw new Error(apiError(data, '读取模型配置失败'));
+            providerPresets = data.presets || {};
+            providers = Array.isArray(data.providers) ? data.providers : [];
+            activeProviderId = data.active_id || '';
+            renderProviderList();
+            updateModelStatus();
+            return true;
         } catch (error) {
-            document.getElementById('modelStatus').textContent = '配置读取失败';
+            document.getElementById('modelStatus').textContent = '模型配置读取失败';
+            return false;
         }
+    }
+
+    function updateModelStatus() {
+        const active = providers.find(function (p) { return p.id === activeProviderId; });
+        const el = document.getElementById('modelStatus');
+        if (!active) {
+            el.textContent = '未配置模型，点击“模型设置”添加 API Key';
+            return;
+        }
+        el.textContent = (active.name || active.provider_type) + ' / ' + (active.model || '');
+    }
+
+    function assistantName() {
+        const active = providers.find(function (p) { return p.id === activeProviderId; });
+        return active ? (active.name || 'AI') : 'AI';
+    }
+
+    function renderProviderList() {
+        const container = document.getElementById('providerList');
+        if (!container) return;
+        container.replaceChildren();
+        if (!providers.length) {
+            container.innerHTML = '<div class="form-hint">尚未添加模型供应商，请在下方填写并验证后保存。</div>';
+            return;
+        }
+        providers.forEach(function (p) {
+            const item = document.createElement('div');
+            item.className = 'provider-item' + (p.id === activeProviderId ? ' active' : '');
+            const info = document.createElement('div');
+            info.className = 'provider-info';
+            const title = document.createElement('div');
+            title.className = 'provider-title';
+            title.textContent = (p.name || p.provider_type) + (p.id === activeProviderId ? '（当前使用）' : '');
+            const sub = document.createElement('div');
+            sub.className = 'provider-sub';
+            sub.textContent = (p.model || '') + ' · ' + (p.base_url || '') + ' · Key ' + (p.api_key_masked || '未设置');
+            info.append(title, sub);
+            const actions = document.createElement('div');
+            actions.className = 'provider-actions';
+            const useBtn = document.createElement('button');
+            useBtn.type = 'button';
+            useBtn.className = 'btn';
+            useBtn.textContent = p.id === activeProviderId ? '使用中' : '使用';
+            useBtn.disabled = p.id === activeProviderId;
+            useBtn.addEventListener('click', function () { activateProvider(p.id); });
+            const delBtn = document.createElement('button');
+            delBtn.type = 'button';
+            delBtn.className = 'btn btn-danger';
+            delBtn.textContent = '删除';
+            delBtn.addEventListener('click', function () { deleteProvider(p.id); });
+            actions.append(useBtn, delBtn);
+            item.append(info, actions);
+            container.append(item);
+        });
+    }
+
+    function populateProviderTypeOptions() {
+        const select = document.getElementById('mpType');
+        select.replaceChildren();
+        Object.keys(providerPresets).forEach(function (key) {
+            const opt = document.createElement('option');
+            opt.value = key;
+            opt.textContent = providerPresets[key].name || key;
+            select.append(opt);
+        });
+        onProviderTypeChange();
+    }
+
+    function onProviderTypeChange() {
+        const type = document.getElementById('mpType').value;
+        const preset = providerPresets[type];
+        if (!preset) return;
+        document.getElementById('mpBaseUrl').value = preset.base_url || '';
+        document.getElementById('mpModel').value = preset.model || '';
+        if (!document.getElementById('mpName').value) {
+            document.getElementById('mpName').value = preset.name || '';
+        }
+    }
+
+    function collectProviderForm() {
+        return {
+            provider_type: document.getElementById('mpType').value,
+            name: document.getElementById('mpName').value.trim(),
+            base_url: document.getElementById('mpBaseUrl').value.trim(),
+            model: document.getElementById('mpModel').value.trim(),
+            api_key: document.getElementById('mpApiKey').value.trim()
+        };
+    }
+
+    async function validateProvider() {
+        const payload = collectProviderForm();
+        if (!payload.base_url || !payload.model || !payload.api_key) {
+            window.alert('请填写 Base URL、模型名和 API Key');
+            return;
+        }
+        const btn = document.getElementById('mpValidateBtn');
+        const msg = document.getElementById('mpValidateMsg');
+        btn.disabled = true;
+        msg.textContent = '正在验证……';
+        try {
+            const response = await fetch('/api/providers/validate', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+            });
+            const data = await readJson(response);
+            if (!response.ok || data.status !== 'success') throw new Error(apiError(data, '验证失败'));
+            msg.textContent = '验证通过：' + (data.message || 'Key 可用');
+            document.getElementById('mpSaveBtn').disabled = false;
+        } catch (error) {
+            msg.textContent = '验证失败：' + (error.message || '未知错误');
+            document.getElementById('mpSaveBtn').disabled = true;
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+    async function saveProvider() {
+        const payload = collectProviderForm();
+        try {
+            const response = await fetch('/api/providers', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+            });
+            const data = await readJson(response);
+            if (!response.ok || data.status !== 'success') throw new Error(apiError(data, '保存失败'));
+            document.getElementById('mpApiKey').value = '';
+            document.getElementById('mpSaveBtn').disabled = true;
+            document.getElementById('mpValidateMsg').textContent = '';
+            await loadProviders();
+            refreshBalance();
+        } catch (error) {
+            window.alert('保存失败：' + (error.message || '未知错误'));
+        }
+    }
+
+    async function activateProvider(id) {
+        try {
+            const response = await fetch('/api/providers/activate', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id })
+            });
+            const data = await readJson(response);
+            if (!response.ok || data.status !== 'success') throw new Error(apiError(data, '切换失败'));
+            await loadProviders();
+            refreshBalance();
+        } catch (error) {
+            window.alert('切换模型失败：' + (error.message || '未知错误'));
+        }
+    }
+
+    async function deleteProvider(id) {
+        if (!window.confirm('确定删除该模型供应商？')) return;
+        try {
+            const response = await fetch('/api/providers/' + encodeURIComponent(id), { method: 'DELETE' });
+            const data = await readJson(response);
+            if (!response.ok || data.status !== 'success') throw new Error(apiError(data, '删除失败'));
+            await loadProviders();
+            refreshBalance();
+        } catch (error) {
+            window.alert('删除失败：' + (error.message || '未知错误'));
+        }
+    }
+
+    async function refreshBalance() {
+        const el = document.getElementById('balanceStatus');
+        if (!activeProviderId) { el.textContent = '余额：未配置模型'; return; }
+        try {
+            const response = await fetch('/api/providers/balance', { cache: 'no-store' });
+            const data = await readJson(response);
+            if (!response.ok || data.status !== 'success') { el.textContent = '余额：查询失败'; return; }
+            if (data.supported && data.balance && data.balance.text) {
+                el.textContent = '余额：' + data.balance.text;
+            } else {
+                el.textContent = '余额：该供应商不支持查询';
+            }
+        } catch (error) {
+            el.textContent = '余额：查询失败';
+        }
+    }
+
+    function openModelModal() {
+        populateProviderTypeOptions();
+        renderProviderList();
+        document.getElementById('modelModal').classList.add('open');
+    }
+
+    function closeModelModal() {
+        document.getElementById('modelModal').classList.remove('open');
     }
 
     async function shutdownAll() {
