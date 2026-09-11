@@ -1,0 +1,22 @@
+<Application x:Class="ChatlogAI.Client.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             ShutdownMode="OnExplicitShutdown">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <!-- 两项各管一件事（T18）：
+                     1) 颜色字典：当前主题的全部色值，来源二选一，启动时由 App 按
+                        ClientSettings 里的偏好决定先挂哪一份；切换主题 = 整体替换这一项。
+                        这里写浅色只是设计期默认值（XAML 里没有"未设置"这种状态），
+                        运行期第一件事就是被 App.ApplyTheme 覆写。
+                     2) 控件样式字典：模板 / 样式 / 转换器，与主题无关，永不替换。
+                        它内部对颜色一律用 DynamicResource，所以第一项换掉即全局生效。
+                     顺序不能反：颜色在前，样式里的 DynamicResource 在解析时能立即找到目标，
+                     避免首帧出现一次"找不到资源"的短暂回退外观。 -->
+                <ResourceDictionary Source="pack://application:,,,/Themes/Theme.Light.xaml" />
+                <ResourceDictionary Source="pack://application:,,,/Themes/Theme.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

@@ -1,0 +1,482 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- =========================================================================
+         全应用控件样式字典（与主题无关的那一半）
+         =========================================================================
+         T18 起本文件**只放转换器与控件样式**，颜色全部搬去了
+         Themes/Theme.Light.xaml 与 Themes/Theme.Dark.xaml：
+         两份颜色字典的 key 集合逐项一致，App 按用户偏好挂其中一份，
+         本文件里的 DynamicResource 引用照常解析，换主题不需要重建控件。
+
+         为什么按"色值 / 样式"而不是"整份复制两份"来拆：
+         模板与配色是两件独立的事。复制模板等于以后改一个模板要改两处，必然漂移；
+         而只搬色值，模板只此一份，深色主题落地成本接近零。
+
+         设计要点（原第 1 至 7 节的颜色块连同说明已随之搬走，各段颜色注释见颜色字典）：
+         1. 所有控件一律只引用 key，不写死颜色，C# 侧（MarkdownRenderer）也通过
+            Application.Current.TryFindResource 取同一批 key，杜绝两边色值走岔。
+         2. TextBox / ComboBox 必须给出完整 ControlTemplate，不能只写 Style 的
+            IsEnabled Trigger。原因是依赖属性优先级里"控件模板里的触发器"高于
+            "Style 里的触发器"，Aero2 默认模板内部已经写了 IsEnabled=False 的
+            Foreground/透明度 Trigger，只改 Style 会被它盖掉。
+
+         注意下方的节号仍从 8 开始：文中有"见第 10 节""写进第 8 节"这类交叉引用，
+         重新编号会把这些引用改错，故保持原编号不动。
+         ========================================================================= -->
+
+    <!-- ==================== 8. 转换器 ==================== -->
+    <BooleanToVisibilityConverter x:Key="BoolToVis" />
+
+    <!-- ==================== 9. Button ====================
+         模板只负责"画出外壳"，悬停/按下/禁用这些状态色放在 Style.Triggers 里。
+         为什么不做成"基样式带触发器 + 派生样式换颜色"？因为 Style 的触发器优先级
+         高于派生样式的 Setter：基样式里写了 IsMouseOver→灰底，派生样式再怎么设
+         Background=绿，一悬停也会被打回灰底。所以两组状态色各自完整写一遍。 -->
+    <ControlTemplate x:Key="FlatButtonTemplate" TargetType="Button">
+        <Border x:Name="Bd"
+                Background="{TemplateBinding Background}"
+                BorderBrush="{TemplateBinding BorderBrush}"
+                BorderThickness="{TemplateBinding BorderThickness}"
+                CornerRadius="4"
+                SnapsToDevicePixels="True">
+            <ContentPresenter Margin="{TemplateBinding Padding}"
+                              HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                              RecognizesAccessKey="True"
+                              TextElement.Foreground="{TemplateBinding Foreground}" />
+        </Border>
+    </ControlTemplate>
+
+    <!-- 次要按钮：白底 + 细边框，是界面上最常见的按钮，所以设为隐式样式。 -->
+    <Style TargetType="Button">
+        <Setter Property="Padding" Value="12,6" />
+        <Setter Property="MinWidth" Value="76" />
+        <Setter Property="MinHeight" Value="30" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+        <Setter Property="Background" Value="{DynamicResource CardBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="FontFamily" Value="Microsoft YaHei UI, Segoe UI" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="SnapsToDevicePixels" Value="True" />
+        <Setter Property="Template" Value="{StaticResource FlatButtonTemplate}" />
+        <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="{DynamicResource PanelBrush}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderHoverBrush}" />
+            </Trigger>
+            <Trigger Property="IsPressed" Value="True">
+                <Setter Property="Background" Value="{DynamicResource SubtleBrush}" />
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Background" Value="{DynamicResource DisabledFillBrush}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource DisabledBorderBrush}" />
+                <Setter Property="Foreground" Value="{DynamicResource DisabledTextBrush}" />
+                <Setter Property="Cursor" Value="Arrow" />
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- 主按钮：绿底白字，全应用只留给"这一刻最想让你点的那个动作"。 -->
+    <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+        <Setter Property="Foreground" Value="{DynamicResource TextOnAccentBrush}" />
+        <Setter Property="Background" Value="{DynamicResource AccentFillBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource AccentFillBrush}" />
+        <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="{DynamicResource AccentFillHoverBrush}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource AccentFillHoverBrush}" />
+            </Trigger>
+            <Trigger Property="IsPressed" Value="True">
+                <Setter Property="Background" Value="{DynamicResource AccentFillPressedBrush}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource AccentFillPressedBrush}" />
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- ==================== 10. TextBox ====================
+         必须自带 ControlTemplate：Aero2 默认模板在 ControlTemplate.Triggers 里写了
+         IsEnabled=False 的处理，其优先级高于 Style.Triggers，只改 Style 改不动。
+         这里把 PART_ContentHost 自己接过来，禁用态改为"灰底 + 深灰可读字"。 -->
+    <Style TargetType="TextBox">
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+        <Setter Property="Background" Value="{DynamicResource CardBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Padding" Value="8,6" />
+        <Setter Property="MinHeight" Value="30" />
+        <Setter Property="FontFamily" Value="Microsoft YaHei UI, Segoe UI" />
+        <Setter Property="CaretBrush" Value="{DynamicResource TextPrimaryBrush}" />
+        <Setter Property="SelectionBrush" Value="{DynamicResource AccentBrush}" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="SnapsToDevicePixels" Value="True" />
+        <!-- 默认不给滚动条（单行输入框不该出现滚动条）。
+             这两项必须用 TemplateBinding 透传进模板，多行框（如启动页日志）才能自己改成 Auto。 -->
+        <Setter Property="HorizontalScrollBarVisibility" Value="Hidden" />
+        <Setter Property="VerticalScrollBarVisibility" Value="Hidden" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="TextBox">
+                    <Border x:Name="Bd"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="4"
+                            SnapsToDevicePixels="True">
+                        <!-- VerticalAlignment 绑 VerticalContentAlignment：单行框默认 Center（文字垂直居中），
+                             多行框设成 Top 即可正常从顶部排版并滚动。 -->
+                        <ScrollViewer x:Name="PART_ContentHost"
+                                      Margin="{TemplateBinding Padding}"
+                                      VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                      Focusable="False"
+                                      HorizontalScrollBarVisibility="{TemplateBinding HorizontalScrollBarVisibility}"
+                                      VerticalScrollBarVisibility="{TemplateBinding VerticalScrollBarVisibility}" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <!-- 用 MultiTrigger 卡住 IsEnabled=True：
+                             否则一个被禁用的框在鼠标划过时还会亮起边框，等于给出错误的可交互暗示。 -->
+                        <MultiTrigger>
+                            <MultiTrigger.Conditions>
+                                <Condition Property="IsMouseOver" Value="True" />
+                                <Condition Property="IsEnabled" Value="True" />
+                            </MultiTrigger.Conditions>
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource ControlBorderHoverBrush}" />
+                        </MultiTrigger>
+                        <MultiTrigger>
+                            <MultiTrigger.Conditions>
+                                <Condition Property="IsKeyboardFocused" Value="True" />
+                                <Condition Property="IsEnabled" Value="True" />
+                            </MultiTrigger.Conditions>
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+                        </MultiTrigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+        <Style.Triggers>
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Background" Value="{DynamicResource DisabledFillBrush}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource DisabledBorderBrush}" />
+                <Setter Property="Foreground" Value="{DynamicResource DisabledTextBrush}" />
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- ==================== 11. ComboBox ====================
+         几个必须知道的坑：
+         a) 弹层必须给出 PART_Popup，且 IsChecked 与 IsDropDownOpen 双向绑定，
+            否则点击展不开——ComboBox 靠模板里的 ToggleButton 驱动展开，不是靠代码。
+         b) 弹层底色必须显式指定。ComboBox.Foreground 会沿 TextElement.Foreground
+            继承到 ComboBoxItem，默认弹层却是浅色，一旦主题色变浅就没了对比，
+            变深就"白字白底"——这条在深色版本里踩过一次。
+         c) 触发器不处理 IsEnabled：禁用色统一由 Style.Triggers 给，
+            模板里不写就不会和 Style 抢优先级。
+         注意：本模板只支持 IsEditable=False（当前所有下拉都是纯选择）。
+         将来要可编辑下拉，需要补 PART_EditableTextBox 分支。 -->
+    <ControlTemplate x:Key="FlatComboBoxTemplate" TargetType="ComboBox">
+        <Grid>
+            <Border x:Name="Bd"
+                    Background="{TemplateBinding Background}"
+                    BorderBrush="{TemplateBinding BorderBrush}"
+                    BorderThickness="{TemplateBinding BorderThickness}"
+                    CornerRadius="4"
+                    SnapsToDevicePixels="True">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <!-- ContentTemplateSelector 这一行不能省：
+                         DisplayMemberPath 并不是模板，ItemsControl 会把它转成
+                         ItemTemplateSelector（DisplayMemberTemplateSelector），
+                         而 ComboBox.UpdateSelectionBoxItem() 只读 ItemTemplate /
+                         ItemTemplateSelector / ItemStringFormat 来算收起态内容，
+                         从不看 DisplayMemberPath。缺这行，收起态就无模板可用，
+                         退化成 Content.ToString()——record 类型于是显示成
+                         "ExportFormatOption { Label = ..., Format = ... }"。
+                         展开态由 ComboBoxItem 的裸 ContentPresenter 自动继承选择器，
+                         所以只有收起态出问题。 -->
+                    <ContentPresenter Grid.Column="0"
+                                      Margin="10,0,4,0"
+                                      VerticalAlignment="Center"
+                                      HorizontalAlignment="Left"
+                                      Content="{TemplateBinding SelectionBoxItem}"
+                                      ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                      ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
+                                      ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}"
+                                      TextElement.Foreground="{TemplateBinding Foreground}" />
+                    <!-- 箭头用 Foreground 上色，禁用时会跟着 Style 里的 Foreground 一起变灰。 -->
+                    <Path Grid.Column="1"
+                          Margin="0,1,10,0"
+                          VerticalAlignment="Center"
+                          Data="M0,0 L9,0 L4.5,5.5 Z"
+                          Fill="{TemplateBinding Foreground}" />
+                </Grid>
+            </Border>
+            <!-- 透明 ToggleButton 盖满整块，只负责"点哪儿都能展开"，不负责绘制。
+                 它必须自带 Template 并 OverridesDefaultStyle，否则会吃到 Aero2 隐式
+                 ToggleButton 样式：那个模板的触发器（ControlTemplate.Triggers）会在
+                 hover / 按下 / 选中 / 禁用时，把内部 Border 的 Background 设成系统色
+                 （#FFBEE6FD / #FFC4E5F6 / #FFBCDDEE / #FFF4F4F4）。
+                 这是"模板触发器里的 TargetName Setter"压过 TemplateBinding，
+                 所以外面写 Background="Transparent" 是压不住的——曾经这里只写了它，
+                 结果鼠标一放上去，整块被填色盖住，文字就看不见了。
+                 官方 ComboBox 模板同样靠 OverridesDefaultStyle + 自带 Template 躲开。
+                 注意 Border 的 Background 必须是 Transparent 而不是留空：
+                 null 笔刷不参与命中测试，留空会导致"点哪儿都能展开"失效。 -->
+            <ToggleButton x:Name="ToggleButton"
+                          Focusable="False"
+                          ClickMode="Press"
+                          OverridesDefaultStyle="True"
+                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                <ToggleButton.Template>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border Background="Transparent" />
+                    </ControlTemplate>
+                </ToggleButton.Template>
+            </ToggleButton>
+            <Popup x:Name="PART_Popup"
+                   Placement="Bottom"
+                   StaysOpen="False"
+                   Focusable="False"
+                   AllowsTransparency="True"
+                   PopupAnimation="Fade"
+                   IsOpen="{TemplateBinding IsDropDownOpen}">
+                <Border MinWidth="{TemplateBinding ActualWidth}"
+                        MaxHeight="{TemplateBinding MaxDropDownHeight}"
+                        Margin="0,4,0,0"
+                        Background="{DynamicResource CardBrush}"
+                        BorderBrush="{DynamicResource LineBrush}"
+                        BorderThickness="1"
+                        CornerRadius="4">
+                    <ScrollViewer Padding="3">
+                        <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained" />
+                    </ScrollViewer>
+                </Border>
+            </Popup>
+        </Grid>
+        <ControlTemplate.Triggers>
+            <MultiTrigger>
+                <MultiTrigger.Conditions>
+                    <Condition Property="IsMouseOver" Value="True" />
+                    <Condition Property="IsEnabled" Value="True" />
+                </MultiTrigger.Conditions>
+                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource ControlBorderHoverBrush}" />
+            </MultiTrigger>
+            <MultiTrigger>
+                <MultiTrigger.Conditions>
+                    <Condition Property="IsDropDownOpen" Value="True" />
+                    <Condition Property="IsEnabled" Value="True" />
+                </MultiTrigger.Conditions>
+                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+            </MultiTrigger>
+        </ControlTemplate.Triggers>
+    </ControlTemplate>
+
+    <Style TargetType="ComboBox">
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+        <Setter Property="Background" Value="{DynamicResource CardBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="MinWidth" Value="96" />
+        <Setter Property="MinHeight" Value="30" />
+        <Setter Property="MaxDropDownHeight" Value="260" />
+        <Setter Property="FontFamily" Value="Microsoft YaHei UI, Segoe UI" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="SnapsToDevicePixels" Value="True" />
+        <Setter Property="Template" Value="{StaticResource FlatComboBoxTemplate}" />
+        <Style.Triggers>
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Background" Value="{DynamicResource DisabledFillBrush}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource DisabledBorderBrush}" />
+                <Setter Property="Foreground" Value="{DynamicResource DisabledTextBrush}" />
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- 下拉项：默认模板的选中态取 SystemColors.HighlightBrush（浅蓝），
+         在浅色主题里就是一块突兀的蓝，必须整块接管。
+         注意触发器的 Setter 不带 TargetName 时作用于"模板父级"（ComboBoxItem 自身），
+         这样 ContentPresenter 上的 TextElement.Foreground 绑定才会跟着变色。 -->
+    <Style TargetType="ComboBoxItem">
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Padding" Value="10,7" />
+        <Setter Property="FontFamily" Value="Microsoft YaHei UI, Segoe UI" />
+        <Setter Property="SnapsToDevicePixels" Value="True" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ComboBoxItem">
+                    <Border x:Name="Bd"
+                            Background="{TemplateBinding Background}"
+                            CornerRadius="3"
+                            SnapsToDevicePixels="True">
+                        <ContentPresenter Margin="{TemplateBinding Padding}"
+                                          VerticalAlignment="Center"
+                                          TextElement.Foreground="{TemplateBinding Foreground}" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource SubtleBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource AccentSoftBrush}" />
+                            <Setter Property="Foreground" Value="{DynamicResource AccentFillBrush}" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ==================== 12. ListBoxItem ====================
+         设为隐式样式，会话列表 / 消息列表 / 启动页账号列表三处共用。
+         默认模板的选中态同样是系统浅蓝（SystemColors.HighlightBrush），必须接管。 -->
+    <Style TargetType="ListBoxItem">
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="Margin" Value="0" />
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="SnapsToDevicePixels" Value="True" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ListBoxItem">
+                    <Border x:Name="Bd"
+                            Background="{TemplateBinding Background}"
+                            SnapsToDevicePixels="True">
+                        <ContentPresenter Margin="{TemplateBinding Padding}"
+                                          HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                          VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource PanelBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource AccentSoftBrush}" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <!-- ==================== 13. PasswordBox ====================
+         为什么不能像 TextBox 那样"只写个 Style 完事"：PasswordBox 不是 TextBox 的子类
+         （两者都直接继承 Control），模板、必需部件、属性各一套，样式无法互相复用。
+         与 TextBox 一样给出完整 ControlTemplate，原因同第 10 节：Aero2 默认模板的
+         ControlTemplate.Triggers 里已经写了 IsEnabled=False 的处理，优先级高于 Style.Triggers，
+         只改 Style 是改不动的。
+
+         必要部件是 ScrollViewer x:Name="PART_ContentHost"：PasswordBox 内部把自己的
+         文本渲染器挂在这个名字上，模板里少写它，框会一片空白（能输入但看不见遮点）。
+
+         这里不写 Password 相关的双向绑定：Password 不是依赖属性，绑不了。
+         同步由 ModelSettingsWindow.xaml.cs 用 PasswordChanged 事件做（见那里的注释）。 -->
+    <Style TargetType="PasswordBox">
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+        <Setter Property="Background" Value="{DynamicResource CardBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Padding" Value="8,6" />
+        <Setter Property="MinHeight" Value="30" />
+        <Setter Property="FontFamily" Value="Microsoft YaHei UI, Segoe UI" />
+        <Setter Property="CaretBrush" Value="{DynamicResource TextPrimaryBrush}" />
+        <Setter Property="SelectionBrush" Value="{DynamicResource AccentBrush}" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="SnapsToDevicePixels" Value="True" />
+        <!-- 原前端是 <input type="password">，浏览器用平台默认的遮点字符；
+             这里显式指定，避免某些字体下默认字符渲染成方框。 -->
+        <Setter Property="PasswordChar" Value="●" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="PasswordBox">
+                    <Border x:Name="Bd"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="4"
+                            SnapsToDevicePixels="True">
+                        <ScrollViewer x:Name="PART_ContentHost"
+                                      Margin="{TemplateBinding Padding}"
+                                      VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                      Focusable="False"
+                                      HorizontalScrollBarVisibility="Hidden"
+                                      VerticalScrollBarVisibility="Hidden" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <!-- 同 TextBox：用 MultiTrigger 卡住 IsEnabled=True，
+                             否则一个被禁用的框鼠标划过还会亮边框，等于给出错误的可交互暗示。 -->
+                        <MultiTrigger>
+                            <MultiTrigger.Conditions>
+                                <Condition Property="IsMouseOver" Value="True" />
+                                <Condition Property="IsEnabled" Value="True" />
+                            </MultiTrigger.Conditions>
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource ControlBorderHoverBrush}" />
+                        </MultiTrigger>
+                        <MultiTrigger>
+                            <MultiTrigger.Conditions>
+                                <Condition Property="IsKeyboardFocused" Value="True" />
+                                <Condition Property="IsEnabled" Value="True" />
+                            </MultiTrigger.Conditions>
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+                        </MultiTrigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+        <Style.Triggers>
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Background" Value="{DynamicResource DisabledFillBrush}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource DisabledBorderBrush}" />
+                <Setter Property="Foreground" Value="{DynamicResource DisabledTextBrush}" />
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- ==================== 14. DangerButton ====================
+         危险动作按钮（"删除模型供应商"），对照原前端的 .btn btn-danger。
+         视觉上刻意用"白底红字 + 红细边"，而不是整块红底：
+         一屏里可能出现多行供应商，每个都挂一块高饱和红会喧宾夺主；
+         红底白字那种"实心危险"只在确认框这类一次性动作上才值得。
+
+         触发器为什么不照抄 PrimaryButton 的写法（只写 IsMouseOver / IsPressed）：
+         Style 的触发器里，派生样式优先于 BasedOn 的基样式。基样式（隐式 Button）有一条
+         IsEnabled=False → 灰底，若派生样式只补 IsMouseOver → 红底，那么"被禁用的删除按钮
+         在鼠标划过时"会命中派生的那条，重新变红 —— 等于给了错误的可点暗示。
+         所以这里把 IsMouseOver / IsPressed 写成 MultiTrigger（同时要求 IsEnabled=True），
+         并完整重写一遍 IsEnabled=False。 -->
+    <Style x:Key="DangerButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+        <Setter Property="Foreground" Value="{DynamicResource DangerBrush}" />
+        <Setter Property="Background" Value="{DynamicResource CardBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource DangerSoftBorderBrush}" />
+        <Style.Triggers>
+            <MultiTrigger>
+                <MultiTrigger.Conditions>
+                    <Condition Property="IsMouseOver" Value="True" />
+                    <Condition Property="IsEnabled" Value="True" />
+                </MultiTrigger.Conditions>
+                <Setter Property="Background" Value="{DynamicResource DangerSoftBrush}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource DangerBrush}" />
+            </MultiTrigger>
+            <MultiTrigger>
+                <MultiTrigger.Conditions>
+                    <Condition Property="IsPressed" Value="True" />
+                    <Condition Property="IsEnabled" Value="True" />
+                </MultiTrigger.Conditions>
+                <Setter Property="Background" Value="{DynamicResource DangerSoftBorderBrush}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource DangerBrush}" />
+            </MultiTrigger>
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Background" Value="{DynamicResource DisabledFillBrush}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource DisabledBorderBrush}" />
+                <Setter Property="Foreground" Value="{DynamicResource DisabledTextBrush}" />
+                <Setter Property="Cursor" Value="Arrow" />
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+</ResourceDictionary>

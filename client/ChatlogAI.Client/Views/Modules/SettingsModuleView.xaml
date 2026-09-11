@@ -1,0 +1,138 @@
+<UserControl x:Class="ChatlogAI.Client.Views.Modules.SettingsModuleView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             FontFamily="Microsoft YaHei UI, Segoe UI"
+             Foreground="{DynamicResource TextPrimaryBrush}">
+
+    <!-- 设置模块（T16）。本轮只把原来挤在定时发送栏底部的两个配置入口收进来：
+         模型设置 / 自动回复。它们的归属是"设置"而不是任何左侧栏位，这正是 §14.2.1 第 2 条说的问题。
+         其余的设置项（快捷键 / 主题 / 免责声明 / 关于）本轮一律不实现，只列出名字，
+         留给各自的任务窗口原地替换本模块内容——所以本文件名固定，不叫 Placeholder。
+
+         本控件不设置 DataContext，绑定继承 MainWindow 的 MainViewModel。 -->
+
+    <Border Background="{DynamicResource PageBrush}">
+        <StackPanel Margin="32,32,32,0"
+                    VerticalAlignment="Top"
+                    MaxWidth="720">
+            <TextBlock Text="设置"
+                       FontSize="18"
+                       FontWeight="SemiBold"
+                       Foreground="{DynamicResource TextPrimaryBrush}" />
+
+            <!-- 模型与 API Key：状态文案原来挂在最左栏底部，跟着入口一起搬过来。 -->
+            <Grid Margin="0,18,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <Button Grid.Column="0"
+                        Content="模型设置"
+                        Width="96"
+                        Padding="0,4"
+                        Click="OnModelSettingsClick" />
+
+                <StackPanel Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding ModelStatus}"
+                               FontSize="12"
+                               TextWrapping="Wrap"
+                               Foreground="{DynamicResource TextSecondaryBrush}" />
+                    <TextBlock Text="{Binding BalanceStatus}"
+                               Margin="0,4,0,0"
+                               FontSize="12"
+                               TextWrapping="Wrap"
+                               Foreground="{DynamicResource TextMutedBrush}" />
+                </StackPanel>
+            </Grid>
+
+            <!-- 自动回复：IsEnabled 绑定 IsAutoReplyAvailable（非 Windows / automation 不可用时禁用）。 -->
+            <Grid Margin="0,14,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <Button Grid.Column="0"
+                        Content="自动回复"
+                        Width="96"
+                        Padding="0,4"
+                        IsEnabled="{Binding IsAutoReplyAvailable}"
+                        Click="OnAutoReplyClick" />
+
+                <TextBlock Grid.Column="1"
+                           Margin="12,0,0,0"
+                           VerticalAlignment="Center"
+                           Text="{Binding AutoReplyStatus}"
+                           FontSize="12"
+                           TextWrapping="Wrap"
+                           Foreground="{DynamicResource TextMutedBrush}" />
+            </Grid>
+
+            <!-- 微信账号（T19-B）：只读状态 + 「管理」入口，真正的操作在账号窗口里。
+                 这里的正事是把"现在读的是哪个账号"摆在设置里一眼可见的地方（与 rail 头像同一份状态），
+                 并在发送被闸门拦住时给出原因——否则用户只会觉得"机器人不回复了"。 -->
+            <Grid Margin="0,14,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <Button Grid.Column="0"
+                        Content="管理"
+                        Width="96"
+                        Padding="0,4"
+                        Click="OnManageAccountClick" />
+
+                <StackPanel Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding CurrentAccountLine}"
+                               FontSize="12"
+                               TextWrapping="Wrap"
+                               Foreground="{DynamicResource TextSecondaryBrush}" />
+                    <!-- 闸门状态：待确认期间发送被拦住，而自动回复那边看起来一切正常，
+                         只有这一行能解释"为什么不回复"（§7.17 闸门语义）。 -->
+                    <TextBlock Text="{Binding SendPausedNotice}"
+                               Margin="0,4,0,0"
+                               FontSize="12"
+                               TextWrapping="Wrap"
+                               Foreground="{DynamicResource DangerBrush}"
+                               Visibility="{Binding IsSendPaused, Converter={StaticResource BoolToVis}}" />
+                </StackPanel>
+            </Grid>
+
+            <!-- 免责声明（T17）：用户勾了"不再提示"之后的回头路。
+                 没有这个入口，勾错一次就再也看不到那段文案（§14.5.2 的配套要求）。
+                 点击后无视"不再提示"强制弹一次，弹窗自己的勾选结果再决定下次还弹不弹。 -->
+            <Grid Margin="0,14,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <Button Grid.Column="0"
+                        Content="免责声明"
+                        Width="96"
+                        Padding="0,4"
+                        Click="OnShowDisclaimerClick" />
+
+                <TextBlock Grid.Column="1"
+                           Margin="12,0,0,0"
+                           VerticalAlignment="Center"
+                           Text="重新显示启动时的免责声明"
+                           FontSize="12"
+                           TextWrapping="Wrap"
+                           Foreground="{DynamicResource TextMutedBrush}" />
+            </Grid>
+
+            <Border Height="1"
+                    Margin="0,20,0,0"
+                    Background="{DynamicResource LineBrush}" />
+
+            <TextBlock Text="建设中：快捷键、关于"
+                       Margin="0,14,0,0"
+                       FontSize="12"
+                       TextWrapping="Wrap"
+                       Foreground="{DynamicResource TextMutedBrush}" />
+        </StackPanel>
+    </Border>
+</UserControl>

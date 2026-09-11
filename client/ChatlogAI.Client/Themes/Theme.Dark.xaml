@@ -1,0 +1,124 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- =========================================================================
+         深色主题：只放颜色 Brush，key 与 Theme.Light.xaml 逐项一致（T18）
+         =========================================================================
+         这不是把 T15 之前那套深色搬回来。那套的标签色 #8A8F9C 压在 #1E1E24 上
+         只有约 2.6:1（§7.6 记录了用户"根本看不清"的原始反馈）。本文件是按
+         WCAG AA 重算过的，实测比值写在每个色块的注释里。
+
+         深色主题的难点不在"把颜色反过来"，而在两处极性冲突：
+
+         冲突 1：AccentSoftBrush（选中行底色）在浅色下是"极浅绿 + 深字"，
+         深色下必须变成"深绿底 + 浅字"，否则选中行上的 TextPrimaryBrush
+         （现在是近白色）会压在浅绿上彻底消失。所以选中态底色的极性必须反过来。
+
+         冲突 2（T24 已解决）：AccentFillBrush 当初被当成**两种角色**用：
+           （a）PrimaryButton / 复选框的填充底色，上面配 TextOnAccentBrush（白字）；
+           （b）选中态标题 / 预设按钮的**文字色**，压在 AccentSoftBrush 上。
+         （a）要求它足够暗（白字才能到 4.5:1），（b）要求它足够亮（才压得住浅底）。
+         两个要求方向相反，在**固定 key 集合**下数学上无法同时满足
+         （白字达标 → L ≤ 0.183；此时它当文字色最多只能到约 3.6:1）。
+         现在的取值策略：AccentFillBrush = #0B8548（L=0.173）**只做填充底色**，优先保证
+         实心主按钮的白字约 4.7:1；(b) 那个文字角色改由本文件下方的
+         **AccentTextBrush**（#3FD07A）承担，压在 AccentSoftBrush 上约 7.7:1（AA 达标）。
+         用点共 5 处：MainWindow 的选中态模板、AutoReplyWindow 的群标签、
+         AccountWindow 的状态文案与「当前账号」徽标、MomentsModuleView 的点赞行。
+
+         冲突 3（同源）：TextOnAccentBrush 必须保持白色。它除了配填充色，
+         还被 MomentsModuleView 的大图查看器用作遮罩上的说明文字；
+         若为了配合变亮的 AccentFill 而把它改成深色，那两处说明文字会直接看不见。
+         ========================================================================= -->
+
+    <!-- ==================== 1. 基础色 ====================
+         用"卡片比页面亮"而不是"卡片比页面暗"：窗口底色最深，内容块浮起来，
+         与浅色主题的层级方向相反但语义一致（内容区永远是更亮的那一层）。 -->
+    <SolidColorBrush x:Key="PageBrush" Color="#1B1D21" />
+    <SolidColorBrush x:Key="CardBrush" Color="#24262B" />
+    <SolidColorBrush x:Key="PanelBrush" Color="#202227" />
+    <SolidColorBrush x:Key="SubtleBrush" Color="#2B2E34" />
+    <SolidColorBrush x:Key="LineBrush" Color="#34383F" />
+    <SolidColorBrush x:Key="ControlBorderBrush" Color="#3E434B" />
+    <!-- 悬停边框要比常态明显亮一档，深色下"变深"是看不出来的。 -->
+    <SolidColorBrush x:Key="ControlBorderHoverBrush" Color="#59616D" />
+
+    <!-- ==================== 2. 文字色 ====================
+         实测（相对亮度按 WCAG 定义，背景取 PageBrush #1B1D21 / CardBrush #24262B）：
+           TextPrimary   #E8EAED → 页面 14.1:1 / 卡片 12.6:1
+           TextSecondary #B4BAC3 → 页面  8.7:1 / 卡片  7.8:1
+           TextMuted     #9CA4B0 → 页面  6.1:1 / 卡片  6.0:1
+         三档都远超小字号 4.5:1，且档与档之间保持约 1.5 倍的亮度台阶。 -->
+    <SolidColorBrush x:Key="TextPrimaryBrush" Color="#E8EAED" />
+    <SolidColorBrush x:Key="TextSecondaryBrush" Color="#B4BAC3" />
+    <SolidColorBrush x:Key="TextMutedBrush" Color="#9CA4B0" />
+    <!-- 固定白色，理由见文件头"冲突 3"。 -->
+    <SolidColorBrush x:Key="TextOnAccentBrush" Color="#FFFFFF" />
+
+    <!-- ==================== 3. 品牌绿 ====================
+         AccentBrush 只做点缀（状态点 / 聚焦边框 / 光标选择），要求的是**非文本**
+         3:1：#07C160 在页面上约 7.1:1，在卡片上约 6.4:1，富余很大，保持不动。
+         它不能当填充底色配白字（白字只有 2.4:1），填充一律用下面的 AccentFill*。 -->
+    <SolidColorBrush x:Key="AccentBrush" Color="#07C160" />
+    <SolidColorBrush x:Key="AccentHoverBrush" Color="#06AD56" />
+    <SolidColorBrush x:Key="AccentPressedBrush" Color="#059147" />
+
+    <!-- 比浅色主题的 #0A7F45 略亮一点：深色背景会"吃"掉一部分绿色的分量感，
+         同时仍保证白字 ≈ 4.7:1（AA 达标）。悬停再亮一档（白字 ≈ 4.0:1，
+         属瞬时态），按下最深（白字 ≈ 7.1:1），与浅色主题的"悬停更亮/按下更深"一致。 -->
+    <SolidColorBrush x:Key="AccentFillBrush" Color="#0B8548" />
+    <SolidColorBrush x:Key="AccentFillHoverBrush" Color="#0C9250" />
+    <SolidColorBrush x:Key="AccentFillPressedBrush" Color="#086636" />
+
+    <!-- 选中行底色：必须是"深绿底 + 浅字"，理由见文件头"冲突 1"。
+         实测 TextPrimary 压其上约 12.8:1（列表选中行主力场景达标）。
+         底色刻意不做得更黑：再黑一档还能再抬一点对比度，但"选中"这个信号本身
+         会退化到几乎看不出，得不偿失。 -->
+    <SolidColorBrush x:Key="AccentSoftBrush" Color="#11291C" />
+    <SolidColorBrush x:Key="AccentSoftBorderBrush" Color="#21503A" />
+
+    <!-- 「强调色的文字用法」专用 key（T24）。它关掉了文件头"冲突 2"那个缺口：
+         原来这个角色由 AccentFillBrush 兼任，深色下压在 AccentSoftBrush 上只有
+         约 3.3:1；改用这个亮绿后约 7.7:1（AA 达标）。
+         它的用点不限于浅绿底：选中态标题（AccentSoft 底）、群标签、状态文案、
+         朋友圈的点赞行（Panel 底）—— 这些都是"深底 + 绿字"，所以只要够亮就都成立。
+         取值直接复用本主题 LinkBrush 的 #3FD07A —— 它是这个主题里已经验证过的
+         "深色背景上的亮绿"，不再自创一个新色。
+         浅色主题里这个 key 与 AccentFillBrush 同值（视觉零变化），因此两套主题的
+         key 集合仍然逐项一致。 -->
+    <SolidColorBrush x:Key="AccentTextBrush" Color="#3FD07A" />
+
+    <!-- ==================== 4. 状态色 ====================
+         DangerBrush 在深色下必须**变亮**：浅色主题的 #D93F3F 压在深底上只有
+         约 3.4:1，作为"删除"按钮的文字色不够。#F07070 在卡片上约 5.2:1，
+         压在 DangerSoftBrush 悬停底上约 5.2:1，两头都过 AA。 -->
+    <SolidColorBrush x:Key="SuccessBrush" Color="#07C160" />
+    <SolidColorBrush x:Key="DangerBrush" Color="#F07070" />
+    <SolidColorBrush x:Key="DangerSoftBrush" Color="#3A2020" />
+    <SolidColorBrush x:Key="DangerSoftBorderBrush" Color="#6E3A3A" />
+
+    <!-- ==================== 5. 禁用态 ====================
+         与浅色主题同一条原则：用"偏离常态的底色 + 仍可读的灰字"表达不可用，
+         而不是整体降透明度。DisabledTextBrush 压在 DisabledFillBrush 上约 5.1:1，
+         用户能看清"这里有个被禁用的值"，这正是 T15 修掉的那个坑。 -->
+    <SolidColorBrush x:Key="DisabledFillBrush" Color="#2E3138" />
+    <SolidColorBrush x:Key="DisabledBorderBrush" Color="#3B3F47" />
+    <SolidColorBrush x:Key="DisabledTextBrush" Color="#9AA3AF" />
+
+    <!-- ==================== 6. 遮罩 ====================
+         比浅色主题的 #66000000 更重：深色界面上 40% 黑几乎看不出遮罩，
+         且大图查看器上压着白色说明文字，需要更实的底才读得清。 -->
+    <SolidColorBrush x:Key="OverlayBrush" Color="#99000000" />
+
+    <!-- ==================== 7. Markdown 渲染专用（C# 侧按同名 key 取用） ====================
+         代码块底色比卡片更暗（内嵌感），行内代码底色比卡片更亮（浮起感），
+         两者都靠"亮度差"而不是"色相差"与正文区分。 -->
+    <SolidColorBrush x:Key="QuoteBarBrush" Color="#3E434B" />
+    <SolidColorBrush x:Key="CodeBackgroundBrush" Color="#1A1C20" />
+    <SolidColorBrush x:Key="CodeInlineBackgroundBrush" Color="#33373F" />
+    <SolidColorBrush x:Key="CodeTextBrush" Color="#E8EAED" />
+    <!-- 链接用亮绿：AccentFillBrush 在深底上太暗读不出来，这里取 #3FD07A，
+         卡片上约 7.6:1。 -->
+    <SolidColorBrush x:Key="LinkBrush" Color="#3FD07A" />
+
+</ResourceDictionary>

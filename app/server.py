@@ -1,25 +1,28 @@
 # -*- coding: utf-8 -*-
-"""基于 WeChatDataAnalysis 与 WeQ 的微信/QQ 实时聊天分析服务。"""
+"""基于 WeChatDataAnalysis 的微信实时聊天分析服务。"""
 
 import os
 import json
+import random
 import asyncio
+import re
 import secrets
 import threading
 import requests
 import time
+import urllib.parse
 from collections import deque
 from datetime import datetime
 from typing import List, Dict, Optional
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Body, Query
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
-from adapters import WeChatAdapter, WeQAdapter
+from adapters import WeChatAdapter
+from config_defaults import DEFAULT_CONFIG, DEFAULT_PROMPTS
 
 try:
     import automation
@@ -29,9 +32,25 @@ except Exception:
 
 BASE_DIR = Path(__file__).parent.resolve()
 ROOT_DIR = Path(os.environ.get("CHATLOG_ROOT_DIR") or BASE_DIR.parent).resolve()
-CONFIG_FILE = ROOT_DIR / "config.json"
-RUNTIME_FILE = ROOT_DIR / "data" / "runtime.json"
-STATIC_DIR = ROOT_DIR / "app" / "static"
+# 可写数据根目录：正式安装版由 .NET 客户端指向 ProgramData（程序目录只读，不可写）；
+# 便携版未设置 CHATLOG_DATA_DIR 时回退到项目根目录，行为与改造前完全一致。
+DATA_ROOT = Path(os.environ.get("CHATLOG_DATA_DIR") or ROOT_DIR).resolve()
+# 全部配置集中在 config/ 根目录：主配置、API Key、提示词、按账号隔离的自动回复。
+CONFIG_DIR = DATA_ROOT / "config"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+API_KEYS_FILE = CONFIG_DIR / "api-keys.json"
+PROMPTS_DIR = CONFIG_DIR / "prompts"
+AUTO_REPLY_DIR = CONFIG_DIR / "auto-reply"
+# 定时发送同样是"按账号隔离的配置"，与 auto-reply 平级，避免与主配置并发写冲突。
+SCHEDULED_SEND_DIR = CONFIG_DIR / "scheduled-send"
+# 运行时会话总结缓存属于数据而非配置，仍留在 data/ 下。
+SUMMARIES_FILE = DATA_ROOT / "data" / "summaries.json"
+# 定时发送的运行时状态（上次发送时刻、抖动后的待触发时刻）属于数据而非配置：
+# 若写回配置文件，会与界面随时保存的配置互相覆盖，必然出现"丢更新"。
+SCHEDULED_STATE_FILE = DATA_ROOT / "data" / "scheduled-send-state.json"
+# 账号切换的"待确认"闸门标记（T19-A，§7.17）。刻意与 config.json 同放 config/：它是
+# "数据源指向哪个账号"这组状态的一半，另一半就是 config.json 的 wechat_account。
+PENDING_SWITCH_FILE = CONFIG_DIR / "pending_account_switch.json"
 
 app = FastAPI(title="Chatlog AI Summarizer", version="5.0.0")
 
@@ -44,15 +63,8 @@ app.add_middleware(
 )
 
 def load_config() -> dict:
-    default_config = {
-        "port": 18765,
-        "wechat_api": "http://127.0.0.1:10392",
-        "wechat_account": "",
-        "weq_url": "http://127.0.0.1:7690",
-        "qq_uin": "",
-        "active_provider": "",
-        "providers": [],
-    }
+    # 默认值来自 config_defaults（原 launcher 生成 config.json 的职责，现由 .NET 客户端 Bootstrap 承担）。
+    default_config = dict(DEFAULT_CONFIG)
     if CONFIG_FILE.exists():
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -70,6 +82,37 @@ def save_config(config: dict) -> None:
         json.dump(config, file, ensure_ascii=False, indent=2)
         file.write("\n")
     os.replace(str(temporary), str(CONFIG_FILE))
+
+
+def load_api_keys() -> dict:
+    """读取 config/api-keys.json，始终返回 {"providers": [...]} 结构。"""
+    providers = []
+    if API_KEYS_FILE.exists():
+        try:
+            with API_KEYS_FILE.open("r", encoding="utf-8") as file:
+                data = json.load(file)
+            if isinstance(data, dict) and isinstance(data.get("providers"), list):
+                providers = [item for item in data["providers"] if isinstance(item, dict)]
+        except (OSError, ValueError):
+            providers = []
+    return {"providers": providers}
+
+
+def save_api_keys(data: dict) -> None:
+    providers = [item for item in (data.get("providers") or []) if isinstance(item, dict)]
+    _write_json_file(API_KEYS_FILE, {"providers": providers})
+
+
+def load_prompt(name: str, fallback: Optional[str] = None) -> str:
+    """读取 config/prompts/<name>.txt；文件缺失或为空时回退到 config_defaults 的默认文案。"""
+    if fallback is None:
+        fallback = DEFAULT_PROMPTS.get(name, "")
+    path = PROMPTS_DIR / (name + ".txt")
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return fallback
+    return text or fallback
 
 
 # 国内主流模型供应商预设；余额接口仅在厂商提供标准 REST 接口时配置。
@@ -113,14 +156,12 @@ PROVIDER_PRESETS = {
 
 
 def list_providers() -> list:
-    config = load_config()
-    providers = config.get("providers") or []
-    return [item for item in providers if isinstance(item, dict)]
+    return load_api_keys()["providers"]
 
 
 def get_active_provider() -> dict:
     config = load_config()
-    providers = config.get("providers") or []
+    providers = list_providers()
     active_id = str(config.get("active_provider") or "").strip()
     if active_id and any(str(item.get("id") or "") == active_id for item in providers):
         pass
@@ -233,42 +274,38 @@ def _query_balance(provider: dict) -> dict:
     return {"available": True, "text": str(data)}
 
 
-def load_runtime() -> dict:
-    if not RUNTIME_FILE.exists():
-        return {}
-    try:
-        with RUNTIME_FILE.open("r", encoding="utf-8") as file:
-            data = json.load(file)
-            return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
-        return {}
+def load_summaries() -> dict:
+    """读取 data/summaries.json（会话 ID → 历史总结列表）。"""
+    data = _read_json_file(SUMMARIES_FILE)
+    return data if isinstance(data, dict) else {}
 
 
-def save_runtime(data: dict) -> None:
-    RUNTIME_FILE.parent.mkdir(parents=True, exist_ok=True)
-    temporary = RUNTIME_FILE.with_suffix(RUNTIME_FILE.suffix + ".tmp")
-    with temporary.open("w", encoding="utf-8", newline="\n") as file:
-        json.dump(data, file, ensure_ascii=False, indent=2)
-        file.write("\n")
-    os.replace(str(temporary), str(RUNTIME_FILE))
+def save_summaries(data: dict) -> None:
+    _write_json_file(SUMMARIES_FILE, data)
 
 
 AUTO_REPLY_DEFAULTS = {
     "enabled": False,
     "guard_targets": [],
     "context_count": 80,
+    # 同一会话的最小回复间隔（秒），0 = 不限制。字段名与取值范围是对客户端冻结的契约，
+    # 见 §7.16，不要改名或改语义。
+    "reply_cooldown_seconds": 10,
     "reply_prompt": "",
     "hotkeys": {
         "open_wechat": "ctrl+alt+w",
         "search": "ctrl+f",
         "paste": "ctrl+v",
         "send": "enter",
+        # 第 5 个可配键（§14.3.4）：「搜索后确认进入会话」用的键。
+        # 旧配置里没有它，load_auto_reply 的合并与 automation 的兜底都会落到 enter，
+        # 因此现有用户升级后行为不变。
+        "confirm": "enter",
     },
 }
 
 # 自动回复配置按微信账号隔离存放：每个账号一个独立 JSON 文件，
-# 与根目录 config.json 分开，避免多账号切换时 prompt/守护对象串号。
-AUTO_REPLY_DIR = ROOT_DIR / "data" / "auto_reply"
+# 与 config/config.json 分开，避免多账号切换时 prompt/守护对象串号。
 
 
 def _auto_reply_account_key() -> str:
@@ -303,23 +340,104 @@ def _write_json_file(path: Path, data: dict) -> None:
     os.replace(str(temporary), str(path))
 
 
+# ==================== 账号切换闸门（T19-A，见 docs/DOTNET_CLIENT_PLAN.md §7.17） ====================
+#
+# 为什么需要闸门：程序能改"数据源读哪个账号的数据"，却无法确认"微信客户端现在登录的是谁"
+# （上游 /api/current-account 对个人微信恒返回 null，见 §14.4.1.1）。危险窗口 = 数据源已指向 B、
+# 客户端还登录着 A，此时键盘模拟出的消息会落进 A 的会话，且不可撤销。所以切换后先暂停发送。
+#
+# 闸门只拦"发送动作"，不拦"检测"：检测照常跑，用户才能看到"有新消息但没回"。
+#
+# 状态载体是 PENDING_SWITCH_FILE 是否存在；**启动时读一次**缓存在内存，之后只由 switch / confirm
+# 两个接口改写内存并按需要的时机落盘 —— 不要每轮去读盘（检测轮询是秒级的）。
+
+_PENDING_SWITCH_LOCK = threading.Lock()
+_pending_switch_state: Optional[Dict] = None
+
+
+def _load_pending_switch_from_disk() -> Optional[Dict]:
+    """启动时读一次标记文件；文件不存在或内容不完整一律视为"未暂停"。"""
+    data = _read_json_file(PENDING_SWITCH_FILE)
+    account = str(data.get("account") or "").strip()
+    if not account:
+        return None
+    return {
+        "account": account,
+        "previousAccount": str(data.get("previousAccount") or "").strip(),
+        "requestedAt": data.get("requestedAt"),
+    }
+
+
+def get_pending_switch() -> Optional[Dict]:
+    with _PENDING_SWITCH_LOCK:
+        return dict(_pending_switch_state) if _pending_switch_state else None
+
+
+def pending_switch_payload() -> Dict:
+    """`GET /api/wechat/account/pending` 与 accounts 里的 `pendingSwitch` 共用一份结构。
+
+    两处各写一套字段迟早会漂，所以只保留这一个出口。
+    """
+    pending = get_pending_switch()
+    if not pending:
+        return {"pending": False, "account": "", "previousAccount": "", "requestedAt": None}
+    return {
+        "pending": True,
+        "account": pending.get("account") or "",
+        "previousAccount": pending.get("previousAccount") or "",
+        "requestedAt": pending.get("requestedAt"),
+    }
+
+
+def _ensure_send_allowed() -> bool:
+    """共享发送谓词：闸门关闭时返回 False。**所有"会真的做键盘模拟发送"的入口都必须先问它。**
+
+    覆盖范围刻意包含手动发送：待确认状态的含义就是"程序不确定微信客户端登录的是谁"，
+    此时**任何**键盘模拟都可能发错人——手动发送不是例外，它同样是在"登录着 A 的窗口里
+    搜索 B 的会话名"。各调用点的差别只在"被拦之后怎么办"（两个引擎记日志并跳过、HTTP
+    端点回 409），判据只有这一份，避免两处各写一套后逐渐漂移。
+    """
+    return get_pending_switch() is None
+
+
+def send_paused_reason() -> str:
+    """闸门关闭的原因（一句话）。引擎日志、status 端点、409 文案共用同一句，避免三处措辞漂移。"""
+    pending = get_pending_switch()
+    if not pending:
+        return ""
+    return "账号切换待确认：数据源已指向「%s」，请在微信客户端登录该账号并点「我已切换」，期间禁止发送" % (
+        pending.get("account") or ""
+    )
+
+
+def _set_pending_switch_memory(pending: Optional[Dict]) -> None:
+    """只改内存（switch 顺序里的第 2 步"先置闸门"）。"""
+    global _pending_switch_state
+    with _PENDING_SWITCH_LOCK:
+        _pending_switch_state = dict(pending) if pending else None
+
+
+def _persist_pending_switch(pending: Dict) -> None:
+    """落盘（switch 顺序里的第 7 步），跨重启有效。"""
+    _write_json_file(PENDING_SWITCH_FILE, dict(pending))
+
+
+def _clear_pending_switch_file() -> None:
+    try:
+        PENDING_SWITCH_FILE.unlink()
+    except OSError:
+        pass
+
+
+_pending_switch_state = _load_pending_switch_from_disk()
+
+
 def _load_auto_reply_raw() -> dict:
-    """读取当前账号的自动回复配置，并迁移旧版扁平数据（仅归入 default 账号）。"""
+    """读取当前账号的自动回复配置。"""
     account = _auto_reply_account_key()
     path = _auto_reply_file_path(account)
     if path.exists():
         return _read_json_file(path)
-
-    # 旧版把配置放在 runtime.json 的 auto_reply 字段里，且无法判断属于哪个账号。
-    # 仅在“未选择账号”的 default 场景迁移，避免把旧 prompt 错误套到某个多账号上。
-    if account == "default":
-        runtime = load_runtime()
-        legacy = runtime.get("auto_reply")
-        if isinstance(legacy, dict) and legacy:
-            _write_json_file(path, legacy)
-            runtime.pop("auto_reply", None)
-            save_runtime(runtime)
-            return legacy
     return {}
 
 
@@ -358,6 +476,9 @@ class AutoReplyEngine:
         self._baselined = set()
         self._signatures = {}
         self._fingerprints = {}
+        # 回复冷却：按会话分别记"上次回复成功的时刻"，给 A 回复过不压住 B 的回复。
+        # 冷却值本身是按账号一份的配置项（reply_cooldown_seconds，§7.16），不在这里存。
+        self._last_reply_at: Dict[str, float] = {}
         self.active_chat_name = None
         self.log = deque(maxlen=200)
 
@@ -378,6 +499,31 @@ class AutoReplyEngine:
 
     def is_running(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
+
+    def reset_detection_state(self) -> None:
+        """账号切换后必须调用：基线/签名/指纹都是**旧账号的会话**留下的。
+
+        不重置的话，新账号的会话指纹与旧记录对不上 → 被判成"有新消息" → 刚切完账号就自动回复
+        一条（§14.4.4 第 4 项）。冷却计时一并无意义：会话标识已不属于同一个账号。
+        整体重新绑定空容器而不是 clear()：检测线程只做 get/set/`in`/add，不迭代这几个容器，
+        换绑在 GIL 下是原子的，不需要额外加锁。
+
+        `active_chat_name` 也一并清掉：它是"微信前台当前所处会话名"的记录，被作为参数传给
+        `automation.send_wechat_message`，而那个函数在**目标会话名 == 这个记录**时会跳过搜索、
+        直接粘贴发送。切换后这个记录属于旧账号，新账号若恰有同名会话（或前台恰停在该会话），
+        就会把消息粘进别的会话——与"发错人"同类。清掉它同时修掉另一个现象：/api/auto-reply/status
+        会把它发给客户端，不清的话界面会一直显示上一个账号的会话名。
+        """
+        self._baselined = set()
+        self._signatures = {}
+        self._fingerprints = {}
+        self._last_reply_at = {}
+        self.active_chat_name = None
+
+    def reset_adapter(self) -> None:
+        """账号切换后必须调用：旧的 adapter 带着旧账号的 session 与 base_url。"""
+        self._adapter = None
+        self._adapter_key = None
 
     def start(self) -> None:
         if self.is_running():
@@ -446,7 +592,13 @@ class AutoReplyEngine:
             self._log("读取「%s」消息失败：%s" % (target_name, exc), level="error")
             return
 
-        incoming = [m for m in messages if m.get("sender") and m.get("sender") != "我"]
+        # 排除系统消息（撤回 / 拍一拍 / 群公告 / 转账提示等）：上游对这类消息一律回
+        # isSent=False，会被下面 "sender != 我" 的判据当成"对方发来的消息"。但系统消息不是
+        # "对方说了话"，回复它没有意义，还会让用户看到"我撤回一条 → 机器人平白多回一条"。
+        incoming = [
+            m for m in messages
+            if m.get("sender") and m.get("sender") != "我" and m.get("message_type") != "system"
+        ]
         signature = None
         if incoming:
             latest = incoming[-1]
@@ -461,9 +613,27 @@ class AutoReplyEngine:
         previous = self._signatures.get(target_id)
         if signature is not None and signature != previous:
             self._signatures[target_id] = signature
+            # 回复冷却（§7.16）：同一会话在冷却期内只回一次。对方连发多条时签名会逐条变化、
+            # 每条各自触发一次生成，而实测第二次生成的输入与第一次完全相同（两条回复文本
+            # 一字不差）→ 纯属刷屏。冷却期内的触发直接丢弃（不做"挂起合并"：那需要把待处理
+            # 状态从 _handle_changed 挪到 _poll_once，而丢弃没有任何信息损失）。
+            # 0 = 不限制；这里再夹一次是因为用户可以手改 config/auto-reply/{account}.json，
+            # 只靠写入端清洗挡不住。日志必须记，否则用户会以为"漏回了"。
+            cooldown = _clamp_int(config.get("reply_cooldown_seconds"), 0, 600, 10)
+            if cooldown > 0 and time.monotonic() - self._last_reply_at.get(str(target_id), 0.0) < cooldown:
+                self._log("「%s」在冷却期内，本条不单独回复" % target_name)
+                return
             self._reply_to(target, target_name, messages, config)
 
     def _reply_to(self, target: Dict, target_name: str, messages: List[Dict], config: Dict) -> None:
+        # 账号切换闸门（T19-A）：位置刻意选在"生成之前"而不是"发送之前"——_reply_to 是先调模型
+        # 生成、再走键盘模拟发送的，拦在发送前的话，暂停期间每轮轮询都会白烧一次真实模型调用
+        # （又慢又花钱）。拦下时**不记冷却时间**：消息没发出去，不该吃掉冷却窗口。
+        # 注意语义：签名在 _handle_changed 里已经更新过了，所以这条消息视为"已消费"，确认后
+        # **不补发**（补发会把十几分钟前的回复打在最危险的时刻，见 §7.17）。
+        if not _ensure_send_allowed():
+            self._log("账号切换待确认，暂不发送「%s」" % target_name)
+            return
         context_count = max(1, int(config.get("context_count") or 80))
         reply_prompt = str(config.get("reply_prompt") or "").strip()
         inner_prompt = str(target.get("prompt") or "").strip()
@@ -477,22 +647,448 @@ class AutoReplyEngine:
             return
         hotkeys = config.get("hotkeys") or {}
         try:
-            self.active_chat_name = automation.send_wechat_message(
-                target_name, reply, hotkeys, active_chat_name=self.active_chat_name
-            )
+            # 与定时发送引擎共用一把锁：两者同时触发会互抢剪贴板与前台窗口，
+            # 结果是一条消息被发到另一个会话（见 _AUTOMATION_LOCK 的说明）。
+            with _AUTOMATION_LOCK:
+                self.active_chat_name = automation.send_wechat_message(
+                    target_name, reply, hotkeys, active_chat_name=self.active_chat_name
+                )
         except Exception as exc:
             self._log("向「%s」发送失败：%s" % (target_name, exc), level="error")
             return
+        # 只有发送成功才计时：生成失败 / 发送失败不该吃掉冷却窗口。
+        self._last_reply_at[str(target.get("id") or "")] = time.monotonic()
         self._log("已回复「%s」" % target_name)
 
 
 _auto_reply_engine = AutoReplyEngine()
 
 
+# ==================== 定时发送（主动打招呼） ====================
+#
+# 与自动回复的区别：自动回复是"被动响应别人发来的消息"，定时发送是"到点主动开口"。
+# 两者共用同一套键盘模拟能力，因此必须共用同一把 _AUTOMATION_LOCK（见下）。
+
+SCHEDULED_SEND_DEFAULTS = {
+    "enabled": False,
+    "tasks": [],
+}
+
+SCHEDULED_MAX_TASKS = 50
+SCHEDULED_MODES = ("daily", "weekly", "interval", "once")
+
+# 键盘模拟是独占资源：自动回复与定时发送若同时触发，会互抢剪贴板与前台窗口，
+# 结果是一条消息被发到另一个会话。两个引擎共用这一把锁把发送串行化。
+_AUTOMATION_LOCK = threading.Lock()
+
+
+def _scheduled_file_path(account: str) -> Path:
+    safe = "".join(ch for ch in account if ch.isalnum() or ch in "-_")
+    if not safe:
+        safe = "default"
+    return SCHEDULED_SEND_DIR / (safe + ".json")
+
+
+def _clamp_int(value, low: int, high: int, default: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(low, min(high, number))
+
+
+def _normalize_time_of_day(value) -> str:
+    """把任意输入折算成合法的 "HH:MM"；非法时回退 09:00。"""
+    text = str(value or "").strip()
+    try:
+        hour_text, minute_text = text.split(":", 1)
+        hour = int(hour_text)
+        minute = int(minute_text)
+    except (ValueError, AttributeError):
+        return "09:00"
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return "09:00"
+    return "%02d:%02d" % (hour, minute)
+
+
+def _normalize_run_at(value) -> str:
+    """一次性任务的时间点，统一成 "YYYY-MM-DDTHH:MM"；无法解析时返回空串。"""
+    text = str(value or "").strip()
+    for fmt in ("%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S",
+                "%Y/%m/%d %H:%M", "%Y/%m/%d %H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt).strftime("%Y-%m-%dT%H:%M")
+        except ValueError:
+            continue
+    return ""
+
+
+def _load_scheduled_raw() -> dict:
+    path = _scheduled_file_path(_auto_reply_account_key())
+    if path.exists():
+        return _read_json_file(path)
+    return {}
+
+
+def load_scheduled_send() -> dict:
+    stored = _load_scheduled_raw()
+    merged = json.loads(json.dumps(SCHEDULED_SEND_DEFAULTS))
+    merged.update(stored)
+    if not isinstance(merged.get("tasks"), list):
+        merged["tasks"] = []
+    merged["enabled"] = bool(merged.get("enabled"))
+    return merged
+
+
+def save_scheduled_send(settings: dict) -> dict:
+    path = _scheduled_file_path(_auto_reply_account_key())
+    current = _load_scheduled_raw()
+    for key, value in settings.items():
+        if value is None:
+            continue
+        current[key] = value
+    _write_json_file(path, current)
+    return load_scheduled_send()
+
+
+def load_scheduled_state() -> dict:
+    return _read_json_file(SCHEDULED_STATE_FILE)
+
+
+def save_scheduled_state(state: dict) -> None:
+    _write_json_file(SCHEDULED_STATE_FILE, state)
+
+
+def normalize_scheduled_tasks(value) -> List[Dict]:
+    """校验并归一化定时任务；数量上限由 SCHEDULED_MAX_TASKS 强制。"""
+    if not isinstance(value, list):
+        raise HTTPException(status_code=400, detail="tasks 必须是数组")
+    cleaned = []
+    seen_ids = set()
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        target_id = str(item.get("target_id") or "").strip()
+        target_name = str(item.get("target_name") or "").strip()
+        if not target_id or not target_name:
+            continue
+        task_id = str(item.get("id") or "").strip() or ("sched-" + secrets.token_hex(5))
+        if task_id in seen_ids:
+            continue
+        seen_ids.add(task_id)
+
+        mode = str(item.get("mode") or "daily").strip()
+        if mode not in SCHEDULED_MODES:
+            mode = "daily"
+
+        weekdays = []
+        if isinstance(item.get("weekdays"), list):
+            for day_value in item["weekdays"]:
+                day = _clamp_int(day_value, 0, 7, 0)
+                if 1 <= day <= 7 and day not in weekdays:
+                    weekdays.append(day)
+        if mode == "weekly" and not weekdays:
+            weekdays = [1]
+
+        run_at = _normalize_run_at(item.get("run_at"))
+        if mode == "once" and not run_at:
+            # 一次性任务没有有效时间点等于永远不会触发，直接拒收而不是留一条死任务。
+            continue
+
+        cleaned.append({
+            "id": task_id,
+            "target_id": target_id,
+            "target_name": target_name,
+            "target_type": "group" if str(item.get("target_type")) == "group" else "friend",
+            "enabled": bool(item.get("enabled", True)),
+            "mode": mode,
+            "time_of_day": _normalize_time_of_day(item.get("time_of_day")),
+            "weekdays": weekdays,
+            "interval_minutes": _clamp_int(item.get("interval_minutes"), 1, 10080, 120),
+            "run_at": run_at,
+            "cooldown_minutes": _clamp_int(item.get("cooldown_minutes"), 0, 10080, 60),
+            "jitter_minutes": _clamp_int(item.get("jitter_minutes"), 0, 1440, 15),
+            "context_count": _clamp_int(item.get("context_count"), 1, 2000, 80),
+            "prompt": str(item.get("prompt") or "").strip(),
+        })
+
+    if len(cleaned) > SCHEDULED_MAX_TASKS:
+        raise HTTPException(status_code=400, detail="定时发送任务最多 %d 个" % SCHEDULED_MAX_TASKS)
+    return cleaned
+
+
+def generate_greeting_text(target_name: str, messages: List[Dict], context_count: int,
+                           task_prompt: str = "") -> str:
+    """生成一条主动打招呼的正文（定时发送与预览接口共用）。
+
+    与 generate_reply_text 的差别只在"指令"：那边要的是"下一条回复"，
+    这边要的是"重开话题的招呼"，因此用独立的 scheduled-greeting 提示词。
+    允许没有历史消息——久未联系的人本来就没有可总结的上下文。
+    """
+    recent = messages[-context_count:] if messages else []
+    text_lines = []
+    for message in recent:
+        text_lines.append("[%s] %s: %s" % (
+            message.get("time", ""),
+            message.get("sender", "未知"),
+            message.get("content", ""),
+        ))
+    chat_text = "\n".join(text_lines)
+
+    outer_prompt = load_prompt("scheduled-greeting")
+    inner_prompt = str(task_prompt or "").strip()
+    system_prompt = "%s\n\n%s" % (outer_prompt, inner_prompt) if inner_prompt else outer_prompt
+
+    if recent:
+        user_content = (
+            "对话对象：%s\n最近 %d 条消息：\n%s\n\n请直接给出这条主动打招呼的消息："
+            % (target_name, len(recent), chat_text)
+        )
+    else:
+        user_content = (
+            "对话对象：%s\n当前没有可用的历史消息。\n\n请直接给出这条主动打招呼的消息："
+            % target_name
+        )
+
+    return _model_completion(
+        [{"role": "system", "content": system_prompt},
+         {"role": "user", "content": user_content}],
+        temperature=0.8,
+    ).strip()
+
+
+def _scheduled_generate(task: Dict) -> str:
+    """取上下文并生成打招呼正文；取数或调用模型失败时抛异常由调用方处理。"""
+    target_id = str(task.get("target_id") or "").strip()
+    target_name = task.get("target_name") or target_id
+    context_count = _clamp_int(task.get("context_count"), 1, 2000, 80)
+    messages = get_wechat_adapter().list_messages(target_id, limit=context_count)
+    return generate_greeting_text(target_name, messages, context_count, task.get("prompt") or "")
+
+
+def _scheduled_base_due(task: Dict, last_sent: Optional[float], now: float) -> Optional[float]:
+    """基础到期时刻（未加随机抖动）；未到期或本周期已发过则返回 None。"""
+    mode = task.get("mode")
+    now_dt = datetime.fromtimestamp(now)
+
+    if mode == "interval":
+        if last_sent is None:
+            # 首次观测不补发：由调用方写入基线，等满一个间隔再说（与守护引擎同理）。
+            return None
+        due = last_sent + _clamp_int(task.get("interval_minutes"), 1, 10080, 120) * 60
+        return due if due <= now else None
+
+    if mode == "once":
+        if last_sent is not None:
+            return None
+        try:
+            due = datetime.strptime(str(task.get("run_at") or ""), "%Y-%m-%dT%H:%M").timestamp()
+        except ValueError:
+            return None
+        return due if due <= now else None
+
+    # daily / weekly：都按"当天该时刻"，且当天只发一次。
+    time_text = _normalize_time_of_day(task.get("time_of_day"))
+    due_dt = now_dt.replace(
+        hour=int(time_text[:2]), minute=int(time_text[3:]), second=0, microsecond=0
+    )
+    if mode == "weekly" and now_dt.isoweekday() not in (task.get("weekdays") or []):
+        return None
+    if last_sent is not None and datetime.fromtimestamp(last_sent).date() == now_dt.date():
+        return None
+    return due_dt.timestamp() if due_dt.timestamp() <= now else None
+
+
+def _scheduled_next_display(task: Dict, entry: Dict, now: float) -> Optional[float]:
+    """仅供界面展示的"下次触发时间"（不含随机抖动）。"""
+    mode = task.get("mode")
+
+    if mode == "once":
+        try:
+            return datetime.strptime(str(task.get("run_at") or ""), "%Y-%m-%dT%H:%M").timestamp()
+        except ValueError:
+            return None
+
+    if mode == "interval":
+        last_sent = entry.get("last_sent_at")
+        base = float(last_sent) if isinstance(last_sent, (int, float)) else now
+        return base + _clamp_int(task.get("interval_minutes"), 1, 10080, 120) * 60
+
+    time_text = _normalize_time_of_day(task.get("time_of_day"))
+    weekdays = task.get("weekdays") or []
+    for offset in range(0, 8):
+        # 用 +86400 而不是 timedelta：省一次 import，且国内无夏令时，不影响结果。
+        candidate = datetime.fromtimestamp(now + offset * 86400).replace(
+            hour=int(time_text[:2]), minute=int(time_text[3:]), second=0, microsecond=0
+        )
+        if mode == "weekly" and candidate.isoweekday() not in weekdays:
+            continue
+        if candidate.timestamp() <= now:
+            continue
+        return candidate.timestamp()
+    return None
+
+
+class ScheduledSendEngine:
+    """后台定时引擎：到点 → 取上下文 → AI 生成招呼 → 键盘模拟发送。
+
+    触发模型是"基础到期时刻 + 随机抖动"：抖动区间内随机推迟，这是"像真人"的关键。
+    已摇定的待触发时刻会落盘，进程重启不会重摇一次。
+    """
+
+    POLL_INTERVAL = 30.0
+
+    def __init__(self):
+        self._thread = None
+        self._stop_event = threading.Event()
+        self.log = deque(maxlen=200)
+
+    def _log(self, message: str, level: str = "info") -> None:
+        self.log.append({
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "level": level,
+            "message": message,
+        })
+
+    def is_running(self) -> bool:
+        return bool(self._thread and self._thread.is_alive())
+
+    def start(self) -> None:
+        if self.is_running():
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._run, name="scheduled-send-engine", daemon=True)
+        self._thread.start()
+        self._log("定时发送引擎已启动")
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                self._poll_once()
+            except Exception as exc:
+                self._log("定时发送引擎异常：%s" % exc, level="error")
+            self._stop_event.wait(self.POLL_INTERVAL)
+
+    def _poll_once(self) -> None:
+        if not (AUTOMATION_AVAILABLE and os.name == "nt"):
+            return
+        config = load_scheduled_send()
+        if not config.get("enabled"):
+            return
+        tasks = [task for task in (config.get("tasks") or []) if bool(task.get("enabled"))]
+        if not tasks:
+            return
+
+        state = load_scheduled_state()
+        now = time.time()
+        dirty = False
+        for task in tasks:
+            target_name = task.get("target_name") or task.get("id")
+            try:
+                if self._process_task(task, state, now):
+                    dirty = True
+            except HTTPException as exc:
+                self._log("为「%s」发送失败：%s" % (target_name, exc.detail), level="error")
+            except Exception as exc:
+                self._log("为「%s」发送失败：%s" % (target_name, exc), level="error")
+
+        if dirty:
+            save_scheduled_state(state)
+
+    def _process_task(self, task: Dict, state: Dict, now: float) -> bool:
+        """推进单个任务，返回是否改动了状态。"""
+        task_id = task.get("id")
+        entry = state.get(task_id)
+        if not isinstance(entry, dict):
+            entry = {}
+            state[task_id] = entry
+
+        last_sent = entry.get("last_sent_at")
+        last_sent = float(last_sent) if isinstance(last_sent, (int, float)) else None
+
+        # 固定间隔模式首次观测只做基线，避免"刚启用就立刻发一条"。
+        if task.get("mode") == "interval" and last_sent is None:
+            entry["last_sent_at"] = now
+            return True
+
+        # 冷却闸门：距上次发送未满冷却时间一律不发（对所有模式生效）。
+        cooldown = _clamp_int(task.get("cooldown_minutes"), 0, 10080, 60) * 60
+        if last_sent is not None and cooldown > 0 and now - last_sent < cooldown:
+            return self._clear_pending(entry)
+
+        base_due = _scheduled_base_due(task, last_sent, now)
+        if base_due is None:
+            return self._clear_pending(entry)
+
+        pending = entry.get("pending_fire_at")
+        if not isinstance(pending, (int, float)):
+            jitter = _clamp_int(task.get("jitter_minutes"), 0, 1440, 15) * 60
+            pending = base_due + (random.uniform(0, jitter) if jitter > 0 else 0.0)
+            entry["pending_fire_at"] = pending
+            # 抖动后仍在未来：本轮只登记待触发时刻，不发送。
+            if now < pending:
+                return True
+
+        if now < pending:
+            return False
+
+        # 账号切换闸门（T19-A）：到点要发时被拦下 → 记日志 + **跳过这一次、不补发**。
+        # 位置同样在生成之前（_send_greeting 里才调模型），避免暂停期间白烧模型调用。
+        # 这里把 entry 按"已发送"同样的方式推进（清 pending、写本次时刻），是为了让这一次
+        # 真正被消费掉：若不推进，每轮轮询都会重复触发（日志刷屏），而且用户确认后会把这条
+        # 十几分钟前的招呼立刻补发出去 —— 万一登录失败/登错账号，补发正好打在最危险的时刻。
+        if not _ensure_send_allowed():
+            self._log("账号切换待确认，跳过本次定时发送「%s」" % (task.get("target_name") or task_id))
+            entry["last_sent_at"] = now
+            entry["pending_fire_at"] = None
+            return True
+
+        self._send_greeting(task, entry)
+        return True
+
+    @staticmethod
+    def _clear_pending(entry: Dict) -> bool:
+        if entry.get("pending_fire_at") is None:
+            return False
+        entry["pending_fire_at"] = None
+        return True
+
+    def _send_greeting(self, task: Dict, entry: Dict) -> None:
+        target_name = task.get("target_name") or task.get("target_id")
+        try:
+            text = _scheduled_generate(task)
+        except HTTPException as exc:
+            self._log("为「%s」生成打招呼消息失败：%s" % (target_name, exc.detail), level="error")
+            return
+        except Exception as exc:
+            self._log("读取「%s」上下文失败：%s" % (target_name, exc), level="error")
+            return
+
+        if not text:
+            self._log("为「%s」生成的打招呼消息为空" % target_name, level="error")
+            return
+
+        hotkeys = load_auto_reply().get("hotkeys") or {}
+        try:
+            with _AUTOMATION_LOCK:
+                automation.send_wechat_message(target_name, text, hotkeys)
+        except Exception as exc:
+            self._log("向「%s」发送失败：%s" % (target_name, exc), level="error")
+            return
+
+        entry["last_sent_at"] = time.time()
+        entry["pending_fire_at"] = None
+        self._log("已定时向「%s」发送消息" % target_name)
+
+
+_scheduled_send_engine = ScheduledSendEngine()
+
+
 _WECHAT_ADAPTER = None
 _WECHAT_ADAPTER_KEY = None
-_QQ_ADAPTER = None
-_QQ_ADAPTER_KEY = None
 
 
 # ==================== 数据源状态与消息窗口 ====================
@@ -508,20 +1104,57 @@ def get_wechat_adapter() -> WeChatAdapter:
     return _WECHAT_ADAPTER
 
 
-def get_qq_adapter() -> WeQAdapter:
-    """按当前配置复用 WeQ 登录态和已打开账号。"""
-    global _QQ_ADAPTER, _QQ_ADAPTER_KEY
-    config = load_config()
-    runtime = load_runtime()
-    key = (
-        config.get("weq_url", ""),
-        runtime.get("weq_token", ""),
-        config.get("qq_uin", ""),
-    )
-    if _QQ_ADAPTER is None or _QQ_ADAPTER_KEY != key:
-        _QQ_ADAPTER = WeQAdapter(*key)
-        _QQ_ADAPTER_KEY = key
-    return _QQ_ADAPTER
+def _reset_wechat_adapters() -> None:
+    """清掉**两处** adapter 缓存：模块级的 `_WECHAT_ADAPTER` 与 `AutoReplyEngine._adapter`。
+
+    两处的缓存键都是 `(wechat_api, wechat_account)`，key 变了本来也会重建；显式清一次是为了
+    不让"下一个调用方一定会读到新配置"成为隐含前提（切换的后续步骤/落盘都可能失败）。
+    """
+    global _WECHAT_ADAPTER, _WECHAT_ADAPTER_KEY
+    _WECHAT_ADAPTER = None
+    _WECHAT_ADAPTER_KEY = None
+    _auto_reply_engine.reset_adapter()
+
+
+def _fetch_upstream_accounts() -> Dict:
+    """读上游账号清单的原样响应（结构见 docs §14.4.1.1）。
+
+    走 adapter 的 `_get` 而不是另起一条 requests.get：那里有 keep-alive 重试（T25 修的坑）与
+    统一的上游错误文案，绕开它等于把这两件已有的事重做一遍，还少一次故障复盘。
+    """
+    return get_wechat_adapter()._get("/api/chat/accounts", timeout=15)
+
+
+def _normalize_upstream_account(item: Dict, active: str) -> Dict:
+    """把上游 `accountInfos[]` 单项归一成本服务的契约字段（§7.17）。
+
+    上游的 `accounts` 是**字符串数组**，不能当对象解析——`accountInfos[]` 才是权威来源。
+    字段名只认 §14.4.1.1 实测到的 `keyReady` / `hasDecryptedDbs`，**不做别名兜底**：
+    上游那些"数量 / 列表"类的候选字段语义并不等价——`bool(3) == True` 会把"有 3 个库"
+    报成"解密库已就绪"，属于"看起来正常但是错的"、最难查的一类 bug。
+    字段缺失即按"未知"处理（保守显示为未就绪）；真机验证若发现字段名对不上，再按实际结构改。
+    """
+    account = str(item.get("account") or "").strip()
+    return {
+        "account": account,
+        "name": str(item.get("name") or account),
+        "keyReady": bool(item.get("keyReady")),
+        "switchable": bool(item.get("switchable")),
+        "hasDecryptedDbs": bool(item.get("hasDecryptedDbs")),
+        "isActive": bool(account) and account == active,
+    }
+
+
+def _upstream_account_entries(data: Dict, active: str = "") -> List[Dict]:
+    """`accountInfos[]` → 归一后的账号列表；为空的条目直接丢弃。"""
+    entries = []
+    for item in data.get("accountInfos") or []:
+        if not isinstance(item, dict):
+            continue
+        entry = _normalize_upstream_account(item, active)
+        if entry["account"]:
+            entries.append(entry)
+    return entries
 
 
 def message_epoch(message: Dict) -> Optional[float]:
@@ -565,14 +1198,40 @@ def get_real_wechat_messages(target_id: str, limit: int = 50) -> List[Dict]:
     return get_wechat_adapter().list_messages(target_id, limit)
 
 
-def get_real_qq_chats() -> Dict:
-    result = get_qq_adapter().list_chats()
-    return {"status_info": result["status_info"], "chats": result["chats"]}
+# 只放行图片：本轮修复范围就是图片，其余媒体类型（表情/视频/语音/文件）不在内。
 
 
-def get_real_qq_messages(target_id: str, is_group: bool = True, limit: int = 50) -> List[Dict]:
-    kind = "group" if is_group else "c2c"
-    return get_qq_adapter().list_messages(target_id, kind, limit)
+def image_proxy_path(target_id: str, md5: str = "", file_id: str = "") -> str:
+    """本服务图片代理的相对路径。参数由服务端拼装，不接受任意 URL。"""
+    params = {"target_id": target_id}
+    if md5:
+        params["md5"] = md5
+    if file_id:
+        params["file_id"] = file_id
+    return "/api/media/image?%s" % urllib.parse.urlencode(params)
+
+
+def absolute_self_url(path: str) -> str:
+    """把相对路径补成指向本服务自身的绝对地址（供客户端直接绑定/下载）。"""
+    port = int(load_config().get("port") or 18765)
+    return "http://127.0.0.1:%d%s" % (port, path)
+
+
+def with_image_url(message: Dict, target_id: str) -> Dict:
+    """给图片消息补上可用的 image_url；其余消息原样返回。
+
+    刻意不改动 content：正文仍保留 [图] 之类的标签，因为 content 会流进 /api/summarize
+    送给大模型，塞进图片 URL 会污染 AI 总结的输入。
+    """
+    if str(message.get("message_type") or "") != "image":
+        return message
+    md5 = str(message.get("image_md5") or "")
+    file_id = str(message.get("image_file_id") or "")
+    if not md5 and not file_id:
+        return message
+    item = dict(message)
+    item["image_url"] = absolute_self_url(image_proxy_path(target_id, md5, file_id))
+    return item
 
 
 # ==================== REST API 端点 ====================
@@ -675,13 +1334,13 @@ async def save_provider_api(data: dict = Body(...)):
             "balance_parser": balance_parser,
         })
 
+    save_api_keys({"providers": providers})
     config = load_config()
-    config["providers"] = providers
     if not str(config.get("active_provider") or "").strip() or not any(
         str(item.get("id") or "") == str(config.get("active_provider") or "") for item in providers
     ):
         config["active_provider"] = provider_id
-    save_config(config)
+        save_config(config)
     return {"status": "success", "id": provider_id}
 
 
@@ -705,11 +1364,11 @@ async def delete_provider_api(provider_id: str):
     remaining = [item for item in providers if str(item.get("id") or "") != provider_id]
     if len(remaining) == len(providers):
         raise HTTPException(status_code=404, detail="供应商不存在")
+    save_api_keys({"providers": remaining})
     config = load_config()
-    config["providers"] = remaining
     if str(config.get("active_provider") or "") == provider_id:
         config["active_provider"] = str(remaining[0].get("id") or "") if remaining else ""
-    save_config(config)
+        save_config(config)
     return {"status": "success"}
 
 
@@ -725,13 +1384,10 @@ async def provider_balance_api():
 
 
 @app.get("/api/chats")
-async def get_chats_api(platform: str = Query("wechat")):
+async def get_chats_api():
     try:
-        if platform == "qq":
-            res = get_real_qq_chats()
-        else:
-            res = get_real_wechat_chats()
-        return {"status": "success", "platform": platform, "status_info": res["status_info"], "chats": res["chats"]}
+        res = get_real_wechat_chats()
+        return {"status": "success", "status_info": res["status_info"], "chats": res["chats"]}
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e))
 
@@ -739,18 +1395,14 @@ async def get_chats_api(platform: str = Query("wechat")):
 @app.get("/api/messages")
 async def get_messages_api(
     target_id: str,
-    platform: str = Query("wechat"),
-    is_group: bool = Query(True),
     limit: int = Query(500, ge=1, le=2000),
     recent_hours: Optional[float] = Query(None),
     recent_count: Optional[int] = Query(None)
 ):
     try:
-        if platform == "qq":
-            msgs = get_real_qq_messages(target_id, is_group, limit)
-        else:
-            msgs = get_real_wechat_messages(target_id, limit)
+        msgs = get_real_wechat_messages(target_id, limit)
         msgs = filter_messages(msgs, recent_hours, recent_count)
+        msgs = [with_image_url(item, target_id) for item in msgs]
         return {
             "status": "success",
             "messages": msgs,
@@ -759,6 +1411,350 @@ async def get_messages_api(
         }
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e))
+
+
+@app.get("/api/media/image")
+async def get_media_image_api(
+    target_id: str,
+    md5: str = "",
+    file_id: str = ""
+):
+    """图片代理：把上游 /api/chat/media/image 的字节流转发给本服务的调用方。
+
+    只接受 target_id / md5 / file_id 三个定位参数，上游 URL 完全由服务端拼装，
+    因此不存在"传入任意 URL 被转发"的 SSRF 风险。
+    """
+    if not md5 and not file_id:
+        raise HTTPException(status_code=400, detail="缺少 md5 或 file_id")
+    try:
+        content, content_type = get_wechat_adapter().fetch_media(
+            "image", target_id, md5, file_id
+        )
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    return Response(
+        content=content,
+        media_type=content_type,
+        # 图片按 md5 寻址、内容不可变，可放心让调用方缓存一天。
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
+
+
+# ==================== 通讯录代理（T21 需求 5） ====================
+
+def contact_avatar_path(username: str) -> str:
+    """本服务头像代理的相对路径；上游 10392 的地址永不下发。"""
+    return "/api/contacts/avatar?%s" % urllib.parse.urlencode({"username": username})
+
+
+@app.get("/api/contacts")
+async def get_contacts_api(
+    include_friends: Optional[bool] = Query(None),
+    include_groups: Optional[bool] = Query(None),
+    include_officials: Optional[bool] = Query(None),
+    include_official_subscriptions: Optional[bool] = Query(None),
+    include_official_services: Optional[bool] = Query(None),
+    include_former_friends: Optional[bool] = Query(None),
+    include_blocked: Optional[bool] = Query(None),
+    keyword: str = Query(""),
+    account: str = Query(""),
+):
+    """通讯录列表：入参逐字对齐上游 include_* 开关（§14.7.2），不额外造 scope 之类语法。
+
+    未显式传入的开关一律不下发，交由上游默认值决定（friends / groups / officials 默认开）。
+    """
+    include = {}
+    for name, value in (
+        ("include_friends", include_friends),
+        ("include_groups", include_groups),
+        ("include_officials", include_officials),
+        ("include_official_subscriptions", include_official_subscriptions),
+        ("include_official_services", include_official_services),
+        ("include_former_friends", include_former_friends),
+        ("include_blocked", include_blocked),
+    ):
+        if value is not None:
+            include[name] = value
+    try:
+        result = get_wechat_adapter().list_contacts(
+            include=include, keyword=keyword, account=account
+        )
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    for contact in result["contacts"]:
+        username = str(contact.get("username") or "")
+        contact["avatar"] = absolute_self_url(contact_avatar_path(username)) if username else ""
+    return {"status": "success", **result}
+
+
+@app.get("/api/contacts/avatar")
+async def get_contact_avatar_api(username: str = Query(...)):
+    """头像代理：与 /api/media/image 同一模式，只接受 username，不接受任意 URL。"""
+    try:
+        content, content_type = get_wechat_adapter().fetch_avatar(username)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    return Response(
+        content=content,
+        media_type=content_type,
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
+
+
+# ==================== 朋友圈代理（T21 需求 6 / 7） ====================
+
+@app.get("/api/sns/timeline")
+async def get_sns_timeline_api(
+    limit: int = Query(20, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    usernames: str = Query(""),
+    keyword: str = Query(""),
+):
+    try:
+        result = get_wechat_adapter().sns_timeline(
+            limit=limit, offset=offset, usernames=usernames, keyword=keyword
+        )
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    return {"status": "success", **result}
+
+
+@app.get("/api/sns/users")
+async def get_sns_users_api(
+    keyword: str = Query(""),
+    limit: int = Query(5000, ge=1, le=20000),
+):
+    try:
+        result = get_wechat_adapter().sns_users(keyword=keyword, limit=limit)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    return {"status": "success", **result}
+
+
+@app.post("/api/sns/sync-latest")
+async def sync_sns_latest_api(data: dict = Body(...)):
+    try:
+        max_scan = int(data.get("max_scan") or 200)
+        force = bool(data.get("force"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="max_scan 必须是整数")
+    try:
+        result = get_wechat_adapter().sns_sync_latest(max_scan=max_scan, force=force)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    # 上游若也返回 status，先摘掉，避免把信封的 success 覆盖掉。
+    result.pop("status", None)
+    return {"status": "success", **result}
+
+
+# /api/sns/media 的上游定位参数白名单（§14.8.1 实测清单）。
+_SNS_MEDIA_TEXT_PARAMS = (
+    "post_id", "post_type", "create_time", "idx", "media_id",
+    "media_type", "url", "width", "height", "total_size", "use_cache", "variant",
+)
+# attrs 里只有这三个是上游 /api/sns/media 认可的（§14.8.1 实测参数表）；
+# enc_idx / type 不在上游参数表内，不下发。
+_SNS_MEDIA_ATTR_PARAMS = ("md5", "key", "token")
+_SNS_MEDIA_MAX_LENGTH = 8192
+
+
+def _sns_media_params(data: dict) -> dict:
+    """把 POST body 收敛成上游 /api/sns/media 的白名单 query 参数。
+
+    客户端把 media 的 urlAttrs / thumbAttrs **整套**放在 attrs 里回传，后端不按 variant
+    重新挑参数——§14.8.1.1 实测：原图与缩略图是两个不同的 token，后端"替客户端挑"必错。
+    """
+    params = {}
+    for name in _SNS_MEDIA_TEXT_PARAMS:
+        value = data.get(name)
+        if value in (None, ""):
+            continue
+        params[name] = str(value)[:_SNS_MEDIA_MAX_LENGTH]
+    attrs = data.get("attrs")
+    if isinstance(attrs, dict):
+        for name in _SNS_MEDIA_ATTR_PARAMS:
+            value = attrs.get(name)
+            if value in (None, ""):
+                continue
+            params[name] = str(value)[:_SNS_MEDIA_MAX_LENGTH]
+    return params
+
+
+@app.post("/api/sns/media")
+async def get_sns_media_api(data: dict = Body(...)):
+    """朋友圈图片代理。
+
+    **为什么必须是 POST 而不是 GET**：定位参数含 token / key（解密密钥），
+    放 query string 会被 uvicorn 的 access log 写进 logs/chatlog.log，
+    而 §10 R10 已把 logs/ 列为含密钥、禁止外发；走 body 则既不进日志也不进 URL。
+    请勿"顺手简化"成 GET。
+    """
+    params = _sns_media_params(data)
+    if not params.get("post_id") or not params.get("media_id"):
+        raise HTTPException(status_code=400, detail="缺少 post_id 或 media_id")
+    if not any(key in params for key in ("token", "key", "md5")):
+        raise HTTPException(status_code=400, detail="缺少 attrs（token / key / md5），该媒体无法解密")
+    try:
+        content, content_type = get_wechat_adapter().fetch_sns_media(params)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    return Response(content=content, media_type=content_type)
+
+
+@app.get("/api/sns/video")
+async def get_sns_video_api(
+    post_id: str = Query(...),
+    media_id: str = Query(...),
+):
+    """上游 /api/sns/video 只要 account / post_id / media_id，不含 token/key，故保持 GET。"""
+    try:
+        content, content_type = get_wechat_adapter().fetch_sns_video(post_id, media_id)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    return Response(content=content, media_type=content_type)
+
+
+_SNS_EXPORT_SCOPES = ("selected", "all")
+_SNS_EXPORT_FORMATS = ("html", "json", "txt", "excel")
+
+
+def _sns_export_payload(data: dict) -> dict:
+    """收敛成上游 SnsExportCreateRequest 的白名单字段。
+
+    刻意不接受 output_dir（落盘路径不下发，产物只走 /download 回传），
+    也不接受 encrypt / content_key_base64（密钥不进客户端，第一版固定不加密）。
+    """
+    scope = str(data.get("scope") or "selected").strip().lower()
+    if scope not in _SNS_EXPORT_SCOPES:
+        raise HTTPException(status_code=400, detail="scope 只能是 selected 或 all")
+    export_format = str(data.get("format") or "html").strip().lower()
+    if export_format not in _SNS_EXPORT_FORMATS:
+        raise HTTPException(status_code=400, detail="format 只能是 html / json / txt / excel")
+    payload = {
+        "scope": scope,
+        "format": export_format,
+        "use_cache": bool(data.get("use_cache", True)),
+    }
+    raw_names = data.get("usernames")
+    if isinstance(raw_names, list):
+        usernames = [str(item).strip() for item in raw_names if str(item).strip()]
+        if usernames:
+            payload["usernames"] = usernames
+    file_name = str(data.get("file_name") or "").strip()
+    if file_name:
+        payload["file_name"] = file_name
+    return payload
+
+
+def _sns_export_id(payload: dict) -> str:
+    """取导出任务 id。
+
+    实测（2026-09-11 直接读上游 ``GET /api/sns/exports``）：任务对象的 id 字段是驼峰
+    ``exportId``，列表响应把它包在 ``jobs[]`` 里，任务对象本身还带 ``status`` / ``zipReady`` /
+    ``progress{postsTotal, postsExported, …}``。
+
+    create / status 的**包装键**没有实测到（列表是 jobs，create 可能是 job / data / 直接平铺），
+    所以这里刻意**不猜包装键名**，而是按已知的字段名做有限深度的查找：
+    顶层先试三个老名字（保持既有行为），再递归找 ``exportId``。
+
+    深度给到 6 是刻意的：create / status 的响应体只可能包含**刚创建的那一个**任务，
+    多走几层不会撞上别人的 id，而"包装键名没实测"这件事正是深度不够时最容易踩的坑。
+    """
+    if isinstance(payload, dict):
+        for name in ("export_id", "exportId", "id"):
+            value = payload.get(name)
+            if value not in (None, ""):
+                return str(value)
+
+    return _find_export_id(payload, depth=6)
+
+
+def _find_export_id(value, depth: int) -> str:
+    """在嵌套结构里找实测字段名 ``exportId``；取不到返回空串。"""
+    if depth <= 0:
+        return ""
+
+    if isinstance(value, dict):
+        for name in ("exportId", "export_id"):
+            candidate = value.get(name)
+            if candidate not in (None, ""):
+                return str(candidate)
+        children = value.values()
+    elif isinstance(value, list):
+        children = value
+    else:
+        return ""
+
+    for child in children:
+        found = _find_export_id(child, depth - 1)
+        if found:
+            return found
+
+    return ""
+
+
+@app.post("/api/sns/export")
+async def create_sns_export_api(data: dict = Body(...)):
+    """创建朋友圈导出任务；产物 ZIP 只通过 /api/sns/export/{id}/download 回传。"""
+    try:
+        result = get_wechat_adapter().sns_export_create(_sns_export_payload(data))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    return {"status": "success", "export_id": _sns_export_id(result), "export": result}
+
+
+@app.get("/api/sns/export/{export_id}")
+async def get_sns_export_status_api(export_id: str):
+    try:
+        result = get_wechat_adapter().sns_export_status(export_id)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    return {"status": "success", "export_id": _sns_export_id(result) or export_id, "export": result}
+
+
+def _export_filename(headers: Dict, export_id: str):
+    """从上游 Content-Disposition 取文件名，取不到就用导出 id 兜底。
+
+    只保留文件名本体，防止目录穿越与响应头注入。
+    """
+    disposition = ""
+    for key, value in (headers or {}).items():
+        if str(key).lower() == "content-disposition":
+            disposition = str(value)
+            break
+    name = ""
+    if disposition:
+        matched = re.search(r"filename\*=UTF-8''([^;]+)", disposition, re.IGNORECASE)
+        if matched:
+            name = urllib.parse.unquote(matched.group(1).strip())
+        else:
+            matched = re.search(r'filename="?([^";]+)"?', disposition, re.IGNORECASE)
+            if matched:
+                name = matched.group(1).strip()
+    name = os.path.basename(name.replace("\\", "/")).replace('"', "").replace("\r", "").replace("\n", "")
+    name = name or ("sns-export-%s.zip" % export_id)
+    ascii_name = re.sub(r"[^A-Za-z0-9._-]", "_", name) or "sns-export.zip"
+    return ascii_name, name
+
+
+@app.get("/api/sns/export/{export_id}/download")
+async def download_sns_export_api(export_id: str):
+    """下载导出 ZIP：产物由本服务回传，客户端看不到上游输出目录。"""
+    try:
+        content, content_type, headers = get_wechat_adapter().sns_export_download(export_id)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    ascii_name, utf8_name = _export_filename(headers, export_id)
+    return Response(
+        content=content,
+        media_type=content_type or "application/zip",
+        headers={
+            "Content-Disposition": "attachment; filename=\"%s\"; filename*=UTF-8''%s"
+            % (ascii_name, urllib.parse.quote(utf8_name))
+        },
+    )
 
 
 @app.post("/api/summarize")
@@ -798,13 +1794,13 @@ async def summarize_api(data: dict = Body(...)):
     chat_text = "\n".join(text_lines)
 
     if summary_type == "meeting":
-        system_prompt = "你是一名高效的高级会议秘书。请对以下聊天记录整理为标准的【会议纪要与决策】，包含：1. 讨论背景 2. 关键决策 3. 责任人及后续动作。"
+        system_prompt = load_prompt("summary-meeting")
     elif summary_type == "todo":
-        system_prompt = "你是一个严谨的项目经理。请从以下聊天记录中精确提取【待办事项与任务列表 (Action Items)】，包含：任务描述、责任人、预期交付时间。"
+        system_prompt = load_prompt("summary-todo")
     elif summary_type == "topics":
-        system_prompt = "你是一个信息分析专家。请提炼以下聊天记录中的【核心讨论热点与话题】，按关注度从高到低排列，并给出简要总结。"
+        system_prompt = load_prompt("summary-topics")
     else:
-        system_prompt = "你是一个智能聊天助手。请对以下聊天记录提供简洁清晰的 Markdown 格式结构化总结，包含核心议题、关键观点及待办项。"
+        system_prompt = load_prompt("summary-general")
 
     history = []
     for item in (data.get("history") or [])[-10:]:
@@ -832,8 +1828,7 @@ async def summarize_api(data: dict = Body(...)):
 
 @app.get("/api/history")
 async def get_history_api(target_id: str = Query(...)):
-    runtime = load_runtime()
-    history = runtime.get("summaries", {}).get(target_id, [])
+    history = load_summaries().get(target_id, [])
     return {"status": "success", "history": history}
 
 
@@ -843,11 +1838,9 @@ async def save_history_api(data: dict = Body(...)):
     history = data.get("history")
     if not target_id or history is None:
         raise HTTPException(status_code=400, detail="缺少 target_id 或 history")
-    runtime = load_runtime()
-    if "summaries" not in runtime:
-        runtime["summaries"] = {}
-    runtime["summaries"][target_id] = history
-    save_runtime(runtime)
+    summaries = load_summaries()
+    summaries[target_id] = history
+    save_summaries(summaries)
     return {"status": "success"}
 
 
@@ -881,11 +1874,8 @@ def generate_reply_text(target_name: str, messages: List[Dict], context_count: i
         ))
     chat_text = "\n".join(text_lines)
 
-    default_outer = "你是聊天记录中的“我”本人。"
-    default_inner = (
-        "请根据最近的对话上下文，生成一条自然、简洁、符合“我”语气和风格的下一条回复。"
-        "只输出回复正文本身，不要任何解释、引号、“回复：”等前缀或额外说明。"
-    )
+    default_outer = load_prompt("auto-reply-outer")
+    default_inner = load_prompt("auto-reply-inner")
     outer_prompt = str(reply_prompt or "").strip() or default_outer
     inner_prompt = str(inner_prompt or "").strip() or default_inner
     system_prompt = "%s\n\n%s" % (outer_prompt, inner_prompt)
@@ -925,6 +1915,9 @@ async def reply_send_api(data: dict = Body(...)):
     if not target_name or not reply:
         raise HTTPException(status_code=400, detail="缺少 target_name 或 reply")
     hotkeys = load_auto_reply()["hotkeys"]
+    # 闸门（T19-A）：手动发送同样走键盘模拟，待确认期间一律拒绝（§7.17）。
+    if not _ensure_send_allowed():
+        raise HTTPException(status_code=409, detail=send_paused_reason())
     try:
         automation.send_wechat_message(target_name, reply, hotkeys)
     except Exception as exc:
@@ -948,6 +1941,10 @@ async def get_auto_reply_status_api():
         "status": "success",
         "enabled": bool(config.get("enabled")),
         "running": _auto_reply_engine.is_running(),
+        # 账号切换待确认时发送会被闸门拦下：界面只显示 running=true 会让用户以为"漏回了"，
+        # 必须把暂停状态与原因一起给出（§7.17 闸门语义）。
+        "sendPaused": not _ensure_send_allowed(),
+        "sendPausedReason": send_paused_reason(),
         "active_chat_name": _auto_reply_engine.active_chat_name,
         "log": list(_auto_reply_engine.log),
     }
@@ -988,7 +1985,8 @@ def normalize_guard_targets(value) -> List[Dict]:
 
 @app.post("/api/auto-reply/config")
 async def set_auto_reply_config_api(data: dict = Body(...)):
-    allowed = {"enabled", "guard_targets", "context_count", "reply_prompt", "hotkeys"}
+    allowed = {"enabled", "guard_targets", "context_count", "reply_cooldown_seconds",
+               "reply_prompt", "hotkeys"}
     settings = {}
     for key in allowed:
         if key not in data:
@@ -997,6 +1995,12 @@ async def set_auto_reply_config_api(data: dict = Body(...)):
         if key == "context_count":
             try:
                 value = max(1, min(2000, int(value)))
+            except (TypeError, ValueError):
+                continue
+        elif key == "reply_cooldown_seconds":
+            # 0 = 不限制（功能关闭）。上下界对齐 §7.16 的冻结契约。
+            try:
+                value = max(0, min(600, int(value)))
             except (TypeError, ValueError):
                 continue
         elif key == "enabled":
@@ -1036,6 +2040,9 @@ async def auto_reply_test_api(data: dict = Body(...)):
             text = str(data.get("text") or "").strip()
             if not target_name or not text:
                 raise HTTPException(status_code=400, detail="完整流程测试需要 target_name 和 text")
+            # 闸门（T19-A）：只有 full 会真的发消息，快捷键 / 剪贴板不受影响。
+            if not _ensure_send_allowed():
+                raise HTTPException(status_code=409, detail=send_paused_reason())
             automation.send_wechat_message(target_name, text, hotkeys)
             return {"status": "success", "message": "完整发送流程已执行"}
     except HTTPException:
@@ -1043,6 +2050,324 @@ async def auto_reply_test_api(data: dict = Body(...)):
     except Exception as exc:
         raise HTTPException(status_code=500, detail="测试失败：%s" % exc) from exc
     raise HTTPException(status_code=400, detail="未知测试动作：%s" % action)
+
+
+# 快捷键自动识别的探测源列表。
+#
+# **当前为空是刻意的**：§14.3.0 已真机取证——微信 4.1 的快捷键设置既不在注册表
+# （键存在但无任何值），账号级配置也是加密二进制，没有任何可读通道。因此本接口
+# 现在恒返回 found=false。
+#
+# 保留「依次尝试 N 个探测源 → 全部失败返回空」的结构：将来某版本微信把热键写回
+# 注册表（或出现别的可读来源），只需往这个列表里加一个返回
+# {"source": ..., "hotkeys": {...}} 的探测器，**接口与 UI 都不用改**（§14.3.2 第 4 条）。
+#
+# 明确不做"逐个候选键试按键"式探测（§14.3.3）：send 默认是 enter，一旦命中就是
+# 真发一条消息；open_wechat 是显示/隐藏 toggle，连按两次状态不可预期。
+HOTKEY_DETECTORS = []
+
+
+@app.post("/api/auto-reply/detect-hotkeys")
+async def auto_reply_detect_hotkeys_api():
+    # 依次尝试所有探测源，任意一个返回非空即为命中；全部失败则返回空结果。
+    for detector in HOTKEY_DETECTORS:
+        try:
+            hit = detector()
+        except Exception:
+            continue
+        if hit:
+            return {
+                "status": "success",
+                "found": True,
+                "source": hit.get("source", ""),
+                "hotkeys": hit.get("hotkeys", {}),
+                "message": "已识别到快捷键，请核对后保存。",
+            }
+
+    # found=false 是**正常结果**，不是错误：客户端只更新提示区、不弹框（§14.3.2 第 3 条）。
+    # message 必须写明"请手工填写"，不能只写"识别失败"——否则用户会一直以为自己用错了
+    # （§14.3.6 风险 4）。
+    return {
+        "status": "success",
+        "found": False,
+        "source": "",
+        "hotkeys": {},
+        "message": "未能自动识别（微信 4.1 未提供可读的快捷键设置），"
+                   "请手工填写微信「设置 → 快捷键」中的值",
+    }
+
+
+# ==================== 定时发送 ====================
+
+@app.get("/api/scheduled-send/config")
+async def get_scheduled_send_config_api():
+    return {
+        "status": "success",
+        "config": load_scheduled_send(),
+        "available": AUTOMATION_AVAILABLE and os.name == "nt",
+    }
+
+
+@app.post("/api/scheduled-send/config")
+async def set_scheduled_send_config_api(data: dict = Body(...)):
+    allowed = {"enabled", "tasks"}
+    settings = {}
+    for key in allowed:
+        if key not in data:
+            continue
+        value = data[key]
+        if key == "enabled":
+            value = bool(value)
+        elif key == "tasks":
+            value = normalize_scheduled_tasks(value)
+        settings[key] = value
+    saved = save_scheduled_send(settings)
+    return {"status": "success", "config": saved}
+
+
+@app.get("/api/scheduled-send/status")
+async def get_scheduled_send_status_api():
+    config = load_scheduled_send()
+    state = load_scheduled_state()
+    now = time.time()
+    tasks = []
+    for task in config.get("tasks") or []:
+        entry = state.get(task.get("id"))
+        if not isinstance(entry, dict):
+            entry = {}
+        last_sent = entry.get("last_sent_at")
+        tasks.append({
+            "id": task.get("id"),
+            "enabled": bool(task.get("enabled")),
+            "next_fire_at": _scheduled_next_display(task, entry, now),
+            "last_sent_at": last_sent if isinstance(last_sent, (int, float)) else None,
+        })
+    return {
+        "status": "success",
+        "enabled": bool(config.get("enabled")),
+        "running": _scheduled_send_engine.is_running(),
+        # 同上：闸门拦下时定时发送会静默跳过，必须让界面能解释"为什么到点了没发"。
+        "sendPaused": not _ensure_send_allowed(),
+        "sendPausedReason": send_paused_reason(),
+        "tasks": tasks,
+        "log": list(_scheduled_send_engine.log),
+    }
+
+
+@app.post("/api/scheduled-send/test")
+async def scheduled_send_test_api(data: dict = Body(...)):
+    if not AUTOMATION_AVAILABLE or os.name != "nt":
+        raise HTTPException(status_code=400, detail="键盘模拟仅在 Windows 上可用")
+    action = str(data.get("action") or "").strip()
+
+    # 刻意收「完整任务」而不是 task_id：界面上还没保存的草稿也要能预览，
+    # 否则新建任务必须先落盘才能试一次，交互很别扭。
+    raw_task = data.get("task")
+    if not isinstance(raw_task, dict):
+        raise HTTPException(status_code=400, detail="缺少 task")
+    normalized = normalize_scheduled_tasks([raw_task])
+    if not normalized:
+        raise HTTPException(status_code=400, detail="任务参数不完整（需要选择联系人，一次性任务还需要有效的时间点）")
+    task = normalized[0]
+
+    if action == "preview":
+        try:
+            return {"status": "success", "text": _scheduled_generate(task)}
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail="生成打招呼消息失败：%s" % exc) from exc
+
+    if action == "send":
+        # 闸门（T19-A）：放在生成之前——被拦下还去调模型就白烧一次调用。
+        if not _ensure_send_allowed():
+            raise HTTPException(status_code=409, detail=send_paused_reason())
+        target_name = task.get("target_name") or task.get("target_id")
+        try:
+            text = _scheduled_generate(task)
+            if not text:
+                raise HTTPException(status_code=500, detail="生成的打招呼消息为空")
+            hotkeys = load_auto_reply().get("hotkeys") or {}
+            with _AUTOMATION_LOCK:
+                automation.send_wechat_message(target_name, text, hotkeys)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail="发送失败：%s" % exc) from exc
+
+        # 手发也算一次真实发送。只对"已保存的任务"写状态：
+        # 未保存草稿没有稳定 id，写进去只会留一堆永远用不到的状态项。
+        saved_ids = {item.get("id") for item in (load_scheduled_send().get("tasks") or [])}
+        if task.get("id") in saved_ids:
+            state = load_scheduled_state()
+            entry = state.get(task["id"])
+            if not isinstance(entry, dict):
+                entry = {}
+                state[task["id"]] = entry
+            entry["last_sent_at"] = time.time()
+            entry["pending_fire_at"] = None
+            save_scheduled_state(state)
+        return {"status": "success", "text": text, "message": "已发送"}
+
+    raise HTTPException(status_code=400, detail="未知测试动作：%s" % action)
+
+
+# ==================== 微信账号切换（T19-A，契约见 docs/DOTNET_CLIENT_PLAN.md §7.17） ====================
+#
+# 切换本身不难：写配置 + 让几处缓存失效 + 重置引擎指纹 + 闸门。难的是安全——程序改得了"数据源读
+# 哪个账号"，改不了也确认不了"微信客户端登录的是谁"（§14.4.3），所以切换后一律先暂停发送。
+# 刻意不做"取消切换"接口：切错了就再切回上一个账号，走同一套 switch 流程。
+
+@app.get("/api/wechat/accounts")
+async def get_wechat_accounts_api():
+    """上游账号清单（契约字段见 §7.17）+ 当前待确认状态，一次给全，客户端不必调两个接口。"""
+    config = load_config()
+    try:
+        upstream = _fetch_upstream_accounts()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    default_account = str(upstream.get("default_account") or "").strip()
+    active = str(config.get("wechat_account") or "").strip() or default_account
+    return {
+        "status": "success",
+        "active": active,
+        "defaultAccount": default_account,
+        "accounts": _upstream_account_entries(upstream, active),
+        "pendingSwitch": pending_switch_payload(),
+    }
+
+
+@app.post("/api/wechat/account/resolve")
+async def resolve_wechat_account_api(data: dict = Body(...)):
+    """返回"让用户去完成密钥解析"的授权页地址。
+
+    **刻意不做 openapi 关键字探测**（前置取证结论）：授权页是给浏览器看的 UI 页面，它不会出现在
+    `/openapi.json` 里（openapi 只描述 JSON 接口）；而上游也没有针对"账号授权/密钥解析"的专用
+    JSON 端点（见 §14.7.1 的 openapi 校准清单）。若按 account / key 之类关键字去匹配，必然误命中
+    `/api/chat/accounts`，浏览器打开的会是一个 JSON 页面——这种错误还很难被识别成 bug。
+    因此直接返回上游 UI 根地址（沿用原 launcher.open_wechat_authorization_page 的行为；launcher 已退役）。
+    """
+    account = str((data or {}).get("account") or "").strip()
+    if not account:
+        raise HTTPException(status_code=400, detail="缺少 account")
+    base = str(load_config().get("wechat_api") or "").strip().rstrip("/")
+    if not base:
+        raise HTTPException(status_code=400, detail="尚未配置数据源地址（wechat_api）")
+    # 降级说明：未找到专用授权端点，降级为打开上游界面首页。
+    return {"status": "success", "authorizeUrl": base + "/"}
+
+
+@app.get("/api/wechat/account/resolve-status")
+async def resolve_wechat_account_status_api(account: str = Query("")):
+    """轮询用：该账号的密钥是否就绪 / 是否可切换（数据源同上，取 accountInfos[] 那一项）。"""
+    account = (account or "").strip()
+    if not account:
+        raise HTTPException(status_code=400, detail="缺少 account")
+    try:
+        upstream = _fetch_upstream_accounts()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    entry = next((item for item in _upstream_account_entries(upstream) if item["account"] == account), None)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="上游账号列表里没有账号「%s」" % account)
+    key_ready = entry["keyReady"]
+    switchable = entry["switchable"]
+    if key_ready:
+        message = "密钥已就绪，可以切换"
+    elif not switchable:
+        message = "该账号当前不可切换，请先在上游授权页完成授权"
+    else:
+        message = "尚未完成密钥解析，请在上游授权页完成授权"
+    return {
+        "status": "success",
+        "account": account,
+        "keyReady": key_ready,
+        "switchable": switchable,
+        "message": message,
+    }
+
+
+@app.post("/api/wechat/account/switch")
+async def switch_wechat_account_api(data: dict = Body(...)):
+    """切换数据源账号。**下面 8 个步骤的顺序就是安全设计本身，不许调换**（§7.17）。
+
+    最容易被"顺手优化"掉的两处：②置闸门必须在④写配置之前（否则闸门还没关、数据源已经指向新
+    账号，正是发错人的窗口）；⑤重置指纹不能省（省了就会出现"刚切完账号就自动回复一条"）。
+    """
+    account = str((data or {}).get("account") or "").strip()
+
+    # ① 校验：账号非空 → 在上游账号列表里 → 密钥就绪 → 不是当前账号。
+    if not account:
+        raise HTTPException(status_code=400, detail="缺少 account")
+    config = load_config()
+    try:
+        upstream = _fetch_upstream_accounts()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    default_account = str(upstream.get("default_account") or "").strip()
+    active = str(config.get("wechat_account") or "").strip() or default_account
+    entry = next((item for item in _upstream_account_entries(upstream) if item["account"] == account), None)
+    if entry is None:
+        raise HTTPException(status_code=400, detail="上游账号列表里没有账号「%s」" % account)
+    if not entry["keyReady"]:
+        raise HTTPException(
+            status_code=400,
+            detail="账号「%s」尚未完成密钥解析，请先在授权页完成授权再切换" % account,
+        )
+    if account == active:
+        raise HTTPException(status_code=400, detail="当前已经是账号「%s」，无需切换" % account)
+
+    previous = active
+    pending = {
+        "account": account,
+        "previousAccount": previous,
+        "requestedAt": datetime.now().isoformat(timespec="seconds"),
+    }
+    # ② 先置闸门（内存）——必须在④写配置之前。
+    _set_pending_switch_memory(pending)
+
+    try:
+        # ③ 与键盘自动化互斥；同时互斥配置写入，避免与"保存定时任务"互相覆盖（§14.4.4 第 7 项）。
+        with _AUTOMATION_LOCK:
+            # ④ 原子写 config/config.json 的 wechat_account。
+            #    在锁内重新 load 一次再改：①与③之间别人可能刚写过其他配置，用旧快照写回会覆盖它。
+            latest = load_config()
+            latest["wechat_account"] = account
+            save_config(latest)
+            # ⑤ 清空引擎的基线/签名/指纹/冷却计时。
+            _auto_reply_engine.reset_detection_state()
+            # ⑥ 清 adapter 缓存（模块级 + 引擎内，共两处）。
+            _reset_wechat_adapters()
+            # ⑦ 落盘标记文件（跨重启有效）。
+            _persist_pending_switch(pending)
+    except Exception as exc:
+        # ④~⑦ 任一步失败：配置可能仍是旧账号，把闸门撤掉，免得留下"账号没换成、发送却一直停着"
+        # 这种更难排查、也更影响用户的状态。
+        _set_pending_switch_memory(None)
+        raise HTTPException(status_code=500, detail="切换账号失败：%s" % exc) from exc
+
+    # ⑧ 返回
+    return {
+        "status": "success",
+        "previousAccount": previous,
+        "active": account,
+        "pendingConfirm": True,
+        "message": "数据源已切换到「%s」，请把微信客户端的登录账号切到该账号，然后点「我已切换」" % account,
+    }
+
+
+@app.get("/api/wechat/account/pending")
+async def get_pending_account_switch_api():
+    """是否有"已切换、等待用户确认微信已登录新账号"的待确认状态（客户端启动时也读它）。"""
+    return {"status": "success", **pending_switch_payload()}
+
+
+@app.post("/api/wechat/account/confirm")
+async def confirm_wechat_account_switch_api():
+    """用户确认"微信客户端已登录新账号"：删标记文件 + 放开闸门。"""
+    _set_pending_switch_memory(None)
+    _clear_pending_switch_file()
+    return {"status": "success", "message": "已确认账号切换，自动发送已恢复"}
 
 
 @app.get("/api/health")
@@ -1062,14 +2387,13 @@ async def shutdown_api():
     return {"status": "success", "message": "统一服务正在退出。"}
 
 
-if STATIC_DIR.exists():
-    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-
 @app.get("/")
 async def read_index():
-    index_path = STATIC_DIR / "index.html"
-    if index_path.exists():
-        return FileResponse(index_path)
+    """根路径保留为「服务在跑吗」的探针。
+
+    网页版前端（原 app/static/）已随 T14 退役，所以这里不再返回 index.html；
+    保留这个端点是为了让浏览器误访问或端口探测时看到一句明确说明，而不是 404。
+    """
     return JSONResponse({"message": "Chatlog AI 后端服务正常运行。"})
 
 
@@ -1077,10 +2401,11 @@ def main():
     config = load_config()
     port = config.get("port", 18765)
     print(f"==================================================")
-    print(f" Chatlog AI 统一服务 v5.0（微信 WeChatDataAnalysis / QQ WeQ）已启动")
+    print(f" Chatlog AI 统一服务 v5.0（微信 WeChatDataAnalysis）已启动")
     print(f" 监听地址: http://127.0.0.1:{port}")
     print(f"==================================================")
     _auto_reply_engine.start()
+    _scheduled_send_engine.start()
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
 
 
