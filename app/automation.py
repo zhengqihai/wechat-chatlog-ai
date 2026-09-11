@@ -308,6 +308,10 @@ def send_wechat_message(target_name: str, text: str, hotkeys: dict, delays: dict
     search_hk = str(hotkeys.get("search") or "ctrl+f")
     paste_hk = str(hotkeys.get("paste") or "ctrl+v")
     send_hk = str(hotkeys.get("send") or "enter")
+    # 第 5 个可配键：「搜索后确认进入会话」用的键（§14.3.4）。
+    # 兜底为 enter 是**兼容性要求**：调用方（老配置、/api/auto-reply/test 的 full 动作）
+    # 可能传入不含 confirm 的字典，兜底后行为与把它写死成 enter 时完全一致。
+    confirm_hk = str(hotkeys.get("confirm") or "enter")
 
     ensure_wechat_foreground(open_hk)
     time.sleep(delays["open"])
@@ -319,7 +323,7 @@ def send_wechat_message(target_name: str, text: str, hotkeys: dict, delays: dict
         set_clipboard_text(target_name)
         press_hotkey(paste_hk)
         time.sleep(delays["select"])
-        press_hotkey("enter")
+        press_hotkey(confirm_hk)
         time.sleep(delays["select"])
         active_chat_name = target_name
 

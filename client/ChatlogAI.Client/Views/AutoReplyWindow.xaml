@@ -1,0 +1,388 @@
+<Window x:Class="ChatlogAI.Client.Views.AutoReplyWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="自动回复设置"
+        Width="560"
+        MaxHeight="760"
+        SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False"
+        Background="{DynamicResource CardBrush}"
+        Foreground="{DynamicResource TextPrimaryBrush}"
+        FontFamily="Microsoft YaHei UI, Segoe UI"
+        FontSize="13"
+        Icon="pack://application:,,,/Assets/app.ico">
+
+    <!-- 对应原前端 app/static/index.html 的 #autoReplyModal。
+         配色与控件样式仍以 Themes/Theme.xaml 为准，只把两个主题里还没有的控件
+         （CheckBox / 危险按钮）临时定义在本窗口资源里：
+         它们是本窗口独有的形态，先不外扩，避免和其它窗口的改造互相踩。 -->
+
+    <Window.Resources>
+        <Style x:Key="FormLabel" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+            <Setter Property="Margin" Value="0,0,0,6" />
+        </Style>
+
+        <Style x:Key="FormHint" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+        </Style>
+
+        <!-- CheckBox 在 Theme.xaml 里没有自定义样式，Aero2 默认模板的选中色是系统蓝，
+             与微信绿主题冲突，所以这里必须自带 ControlTemplate。
+             （与 Theme.xaml §10 的 TextBox 同理：默认模板在 ControlTemplate.Triggers
+             里写了 IsEnabled 的处理，其优先级高于 Style.Triggers，只改 Style 改不动。） -->
+        <Style x:Key="ThemedCheckBox" TargetType="CheckBox">
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="SnapsToDevicePixels" Value="True" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="CheckBox">
+                        <!-- 整行透明底 = 整行可点，对应原前端 label 撑满一行的点击区域。 -->
+                        <Border Background="Transparent" Padding="2">
+                            <StackPanel Orientation="Horizontal">
+                                <Border x:Name="Box"
+                                        Width="16"
+                                        Height="16"
+                                        CornerRadius="3"
+                                        Background="{DynamicResource CardBrush}"
+                                        BorderBrush="{DynamicResource ControlBorderBrush}"
+                                        BorderThickness="1"
+                                        VerticalAlignment="Center"
+                                        SnapsToDevicePixels="True">
+                                    <Path x:Name="Tick"
+                                          Data="M 0,3.5 L 3,6.5 L 8,1"
+                                          Stroke="{DynamicResource TextOnAccentBrush}"
+                                          StrokeThickness="1.8"
+                                          StrokeStartLineCap="Round"
+                                          StrokeEndLineCap="Round"
+                                          HorizontalAlignment="Center"
+                                          VerticalAlignment="Center"
+                                          Visibility="Collapsed" />
+                                </Border>
+                                <ContentPresenter Margin="8,0,0,0"
+                                                  VerticalAlignment="Center"
+                                                  RecognizesAccessKey="True"
+                                                  TextElement.Foreground="{TemplateBinding Foreground}" />
+                            </StackPanel>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Box" Property="Background" Value="{DynamicResource AccentFillBrush}" />
+                                <Setter TargetName="Box" Property="BorderBrush" Value="{DynamicResource AccentFillBrush}" />
+                                <Setter TargetName="Tick" Property="Visibility" Value="Visible" />
+                            </Trigger>
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions>
+                                    <Condition Property="IsMouseOver" Value="True" />
+                                    <Condition Property="IsEnabled" Value="True" />
+                                </MultiTrigger.Conditions>
+                                <Setter TargetName="Box" Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+                            </MultiTrigger>
+                            <!-- 声明在最后：勾选/悬停与禁用态同时成立时，禁用态说了算。 -->
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Foreground" Value="{DynamicResource DisabledTextBrush}" />
+                                <Setter TargetName="Box" Property="Background" Value="{DynamicResource DisabledFillBrush}" />
+                                <Setter TargetName="Box" Property="BorderBrush" Value="{DynamicResource DisabledBorderBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- "测试完整发送流程"是唯一会真的往微信发消息的按钮，用危险色把它和普通按钮区分开。
+             沿用 Theme.xaml §9 的教训：派生样式的悬停/按下状态必须各自完整写一遍，
+             否则基样式里的灰底触发器会把这里的浅红底打回去。 -->
+        <Style x:Key="DangerButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="Foreground" Value="{DynamicResource DangerBrush}" />
+            <Setter Property="Background" Value="{DynamicResource DangerSoftBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource DangerSoftBorderBrush}" />
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource DangerSoftBrush}" />
+                    <Setter Property="BorderBrush" Value="{DynamicResource DangerBrush}" />
+                </Trigger>
+                <Trigger Property="IsPressed" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource DangerSoftBorderBrush}" />
+                    <Setter Property="BorderBrush" Value="{DynamicResource DangerBrush}" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- 守护候选的一行：勾选框 + 名称 + 类型徽标，勾选后多出一个"单独提示词"输入框。
+             徽标配色沿用主题里仅有的两档语义色：好友走中性灰，群聊走浅绿。
+             原前端是"好友蓝 / 群聊绿"，新主题没有蓝色语义，不再为它新增色值。 -->
+        <DataTemplate x:Key="GuardTargetTemplate">
+            <StackPanel Margin="0,0,0,2">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <CheckBox Grid.Column="0"
+                              Style="{StaticResource ThemedCheckBox}"
+                              IsChecked="{Binding IsSelected}"
+                              IsEnabled="{Binding IsEnabled}">
+                        <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
+                    </CheckBox>
+
+                    <Border Grid.Column="1"
+                            Margin="8,0,0,0"
+                            Padding="6,1"
+                            CornerRadius="8"
+                            VerticalAlignment="Center"
+                            Background="{DynamicResource SubtleBrush}">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="Background" Value="{DynamicResource SubtleBrush}" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsGroup}" Value="True">
+                                        <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        <TextBlock Text="{Binding TypeText}" FontSize="10">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsGroup}" Value="True">
+                                            <Setter Property="Foreground" Value="{DynamicResource AccentTextBrush}" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </Border>
+                </Grid>
+
+                <TextBox Margin="24,6,0,2"
+                         FontSize="12"
+                         Text="{Binding Prompt, UpdateSourceTrigger=PropertyChanged}"
+                         Visibility="{Binding IsPromptVisible, Converter={StaticResource BoolToVis}}"
+                         ToolTip="单独提示词（可选，留空用默认）" />
+            </StackPanel>
+        </DataTemplate>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
+            <StackPanel Margin="20,18,20,16">
+
+                <!-- 启用开关 -->
+                <CheckBox Style="{StaticResource ThemedCheckBox}"
+                          IsChecked="{Binding Enabled}"
+                          Margin="0,0,0,16">
+                    <TextBlock Text="启用自动回复" FontWeight="SemiBold" />
+                </CheckBox>
+
+                <!-- 守护会话 -->
+                <TextBlock Style="{StaticResource FormLabel}" Text="守护会话（最多 8 个好友 + 3 个群聊）" />
+                <Border BorderBrush="{DynamicResource ControlBorderBrush}"
+                        BorderThickness="1"
+                        CornerRadius="6"
+                        Padding="6"
+                        Background="{DynamicResource CardBrush}">
+                    <!-- 空态与列表同格覆盖：候选为空时连"好友/群聊"表头一起不显示，
+                         只留一句占位文案（对应原前端 renderGuardTargetList 的提前 return）。 -->
+                    <Grid>
+                        <ScrollViewer MaxHeight="300" VerticalScrollBarVisibility="Auto">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource FormHint}"
+                                           Margin="6,2,0,4"
+                                           Text="{Binding FriendCountText}" />
+                                <ItemsControl ItemsSource="{Binding FriendTargets}"
+                                              ItemTemplate="{StaticResource GuardTargetTemplate}" />
+
+                                <TextBlock Style="{StaticResource FormHint}"
+                                           Margin="6,8,0,4"
+                                           Text="{Binding GroupCountText}" />
+                                <ItemsControl ItemsSource="{Binding GroupTargets}"
+                                              ItemTemplate="{StaticResource GuardTargetTemplate}" />
+                            </StackPanel>
+                        </ScrollViewer>
+
+                        <TextBlock Style="{StaticResource FormHint}"
+                                   Margin="6"
+                                   VerticalAlignment="Top"
+                                   Text="{Binding GuardPlaceholder}"
+                                   Visibility="{Binding ShowGuardPlaceholder, Converter={StaticResource BoolToVis}}" />
+                    </Grid>
+                </Border>
+                <TextBlock Style="{StaticResource FormHint}"
+                           Margin="0,6,0,16"
+                           Text="仅微信会话支持自动回复；未勾选任何会话则不会守护。" />
+
+                <!-- 上下文条数 -->
+                <TextBlock Style="{StaticResource FormLabel}" Text="上下文条数（含新消息）" />
+                <TextBox Margin="0,0,0,16"
+                         MaxWidth="200"
+                         HorizontalAlignment="Left"
+                         Text="{Binding ContextCountText, UpdateSourceTrigger=PropertyChanged}" />
+
+                <!-- 同一会话的最小回复间隔（秒）
+                     为什么要这一项：引擎判定"有新消息"的粒度是"最后一条对方消息的 id"，
+                     所以对方连发 N 条会各自触发一次生成，实测出现过两条内容完全相同的回复。
+                     冷却按会话分别计时，这个值只是"每个会话各自用多久"，给 A 回复过不会压住 B。 -->
+                <TextBlock Style="{StaticResource FormLabel}" Text="同一会话的最小回复间隔（秒）" />
+                <TextBox Margin="0,0,0,6"
+                         MaxWidth="200"
+                         HorizontalAlignment="Left"
+                         Text="{Binding ReplyCooldownText, UpdateSourceTrigger=PropertyChanged}" />
+                <TextBlock Style="{StaticResource FormHint}"
+                           Margin="0,0,0,16"
+                           Text="这段时间内同一个会话最多回复一次，避免对方连发多条时被逐条回复；0 = 不限制。" />
+
+                <!-- 自定义回复提示词 -->
+                <TextBlock Style="{StaticResource FormLabel}" Text="自定义回复提示词（可选，留空用默认）" />
+                <TextBox Margin="0,0,0,16"
+                         Text="{Binding ReplyPrompt, UpdateSourceTrigger=PropertyChanged}"
+                         ToolTip="例如：用简短、口语化的中文回复" />
+
+                <!-- 微信快捷键：五行同构，列宽固定，直接对齐即可，不额外抽模板 -->
+                <TextBlock Style="{StaticResource FormLabel}" Text="微信快捷键" />
+
+                <Grid Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="90" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0"
+                               Text="打开微信"
+                               VerticalAlignment="Center"
+                               Foreground="{DynamicResource TextSecondaryBrush}" />
+                    <TextBox Grid.Column="1"
+                             Margin="8,0"
+                             Text="{Binding OpenWechatHotkey, UpdateSourceTrigger=PropertyChanged}" />
+                    <Button Grid.Column="2"
+                            Content="测试"
+                            Command="{Binding TestHotkeyCommand}"
+                            CommandParameter="open_wechat" />
+                </Grid>
+
+                <Grid Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="90" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0"
+                               Text="搜索会话"
+                               VerticalAlignment="Center"
+                               Foreground="{DynamicResource TextSecondaryBrush}" />
+                    <TextBox Grid.Column="1"
+                             Margin="8,0"
+                             Text="{Binding SearchHotkey, UpdateSourceTrigger=PropertyChanged}" />
+                    <Button Grid.Column="2"
+                            Content="测试"
+                            Command="{Binding TestHotkeyCommand}"
+                            CommandParameter="search" />
+                </Grid>
+
+                <Grid Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="90" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0"
+                               Text="粘贴"
+                               VerticalAlignment="Center"
+                               Foreground="{DynamicResource TextSecondaryBrush}" />
+                    <TextBox Grid.Column="1"
+                             Margin="8,0"
+                             Text="{Binding PasteHotkey, UpdateSourceTrigger=PropertyChanged}" />
+                    <Button Grid.Column="2"
+                            Content="测试"
+                            Command="{Binding TestHotkeyCommand}"
+                            CommandParameter="paste" />
+                </Grid>
+
+                <Grid Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="90" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0"
+                               Text="发送"
+                               VerticalAlignment="Center"
+                               Foreground="{DynamicResource TextSecondaryBrush}" />
+                    <TextBox Grid.Column="1"
+                             Margin="8,0"
+                             Text="{Binding SendHotkey, UpdateSourceTrigger=PropertyChanged}" />
+                    <Button Grid.Column="2"
+                            Content="测试"
+                            Command="{Binding TestHotkeyCommand}"
+                            CommandParameter="send" />
+                </Grid>
+
+                <!-- 第 5 个键：搜索后按它「确认进入会话」（§14.3.4），此前是写死的 enter -->
+                <Grid Margin="0,0,0,16">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="90" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0"
+                               Text="打开选中会话"
+                               VerticalAlignment="Center"
+                               Foreground="{DynamicResource TextSecondaryBrush}" />
+                    <TextBox Grid.Column="1"
+                             Margin="8,0"
+                             Text="{Binding ConfirmHotkey, UpdateSourceTrigger=PropertyChanged}" />
+                    <Button Grid.Column="2"
+                            Content="测试"
+                            Command="{Binding TestHotkeyCommand}"
+                            CommandParameter="confirm" />
+                </Grid>
+
+                <!-- 识别不到只更新下面这行提示，不弹框（§14.3.2 第 3 条） -->
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                    <Button Content="自动识别" Command="{Binding DetectHotkeysCommand}" />
+                    <Button Content="恢复默认值" Margin="8,0,0,0" Command="{Binding RestoreDefaultsCommand}" />
+                </StackPanel>
+                <TextBlock Style="{StaticResource FormHint}"
+                           Margin="0,0,0,16"
+                           TextWrapping="Wrap"
+                           Text="{Binding HotkeyHintText}" />
+
+                <!-- 完整流程测试 -->
+                <Button Content="测试完整发送流程"
+                        Style="{StaticResource DangerButton}"
+                        HorizontalAlignment="Left"
+                        Command="{Binding TestFullFlowCommand}" />
+                <TextBlock Style="{StaticResource FormHint}"
+                           Margin="0,6,0,0"
+                           Text="会真实发送一条「这是一条 Chatlog AI 自动回复测试消息」到当前选中会话，请谨慎使用。" />
+            </StackPanel>
+        </ScrollViewer>
+
+        <Border Grid.Row="1"
+                Background="{DynamicResource PanelBrush}"
+                BorderBrush="{DynamicResource LineBrush}"
+                BorderThickness="0,1,0,0"
+                Padding="20,12">
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button Content="取消" Margin="0,0,8,0" Click="OnCancelClick" />
+                <Button Content="保存" Style="{StaticResource PrimaryButton}" Command="{Binding SaveCommand}" />
+            </StackPanel>
+        </Border>
+    </Grid>
+</Window>

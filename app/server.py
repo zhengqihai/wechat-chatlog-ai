@@ -297,6 +297,10 @@ AUTO_REPLY_DEFAULTS = {
         "search": "ctrl+f",
         "paste": "ctrl+v",
         "send": "enter",
+        # 第 5 个可配键（§14.3.4）：「搜索后确认进入会话」用的键。
+        # 旧配置里没有它，load_auto_reply 的合并与 automation 的兜底都会落到 enter，
+        # 因此现有用户升级后行为不变。
+        "confirm": "enter",
     },
 }
 
@@ -2046,6 +2050,51 @@ async def auto_reply_test_api(data: dict = Body(...)):
     except Exception as exc:
         raise HTTPException(status_code=500, detail="测试失败：%s" % exc) from exc
     raise HTTPException(status_code=400, detail="未知测试动作：%s" % action)
+
+
+# 快捷键自动识别的探测源列表。
+#
+# **当前为空是刻意的**：§14.3.0 已真机取证——微信 4.1 的快捷键设置既不在注册表
+# （键存在但无任何值），账号级配置也是加密二进制，没有任何可读通道。因此本接口
+# 现在恒返回 found=false。
+#
+# 保留「依次尝试 N 个探测源 → 全部失败返回空」的结构：将来某版本微信把热键写回
+# 注册表（或出现别的可读来源），只需往这个列表里加一个返回
+# {"source": ..., "hotkeys": {...}} 的探测器，**接口与 UI 都不用改**（§14.3.2 第 4 条）。
+#
+# 明确不做"逐个候选键试按键"式探测（§14.3.3）：send 默认是 enter，一旦命中就是
+# 真发一条消息；open_wechat 是显示/隐藏 toggle，连按两次状态不可预期。
+HOTKEY_DETECTORS = []
+
+
+@app.post("/api/auto-reply/detect-hotkeys")
+async def auto_reply_detect_hotkeys_api():
+    # 依次尝试所有探测源，任意一个返回非空即为命中；全部失败则返回空结果。
+    for detector in HOTKEY_DETECTORS:
+        try:
+            hit = detector()
+        except Exception:
+            continue
+        if hit:
+            return {
+                "status": "success",
+                "found": True,
+                "source": hit.get("source", ""),
+                "hotkeys": hit.get("hotkeys", {}),
+                "message": "已识别到快捷键，请核对后保存。",
+            }
+
+    # found=false 是**正常结果**，不是错误：客户端只更新提示区、不弹框（§14.3.2 第 3 条）。
+    # message 必须写明"请手工填写"，不能只写"识别失败"——否则用户会一直以为自己用错了
+    # （§14.3.6 风险 4）。
+    return {
+        "status": "success",
+        "found": False,
+        "source": "",
+        "hotkeys": {},
+        "message": "未能自动识别（微信 4.1 未提供可读的快捷键设置），"
+                   "请手工填写微信「设置 → 快捷键」中的值",
+    }
 
 
 # ==================== 定时发送 ====================

@@ -1,0 +1,45 @@
+Chatlog AI 客户端 —— 构建与运行命令
+======================================================================
+
+【日常开发：编译 -> 运行】（不需要打包）
+
+第 1 步：编译（Debug）
+& "C:\Program Files\dotnet\dotnet.exe" build "d:\code\chatlog-ai-portable\client\ChatlogAI.sln" -c Debug
+
+    说明：dotnet 不在终端 PATH 里，所以必须用全路径。
+    编译产物：client\ChatlogAI.Client\bin\Debug\net8.0-windows\
+
+第 2 步：运行（PowerShell）
+$env:CHATLOG_ROOT_DIR = 'd:\code\chatlog-ai-portable'
+$env:CHATLOG_DATA_DIR = 'd:\code\chatlog-ai-portable\client\out-data'
+& "d:\code\chatlog-ai-portable\client\ChatlogAI.Client\bin\Debug\net8.0-windows\ChatlogAI.exe"
+
+第 2 步：运行（命令提示符 cmd）
+set CHATLOG_ROOT_DIR=d:\code\chatlog-ai-portable
+set CHATLOG_DATA_DIR=d:\code\chatlog-ai-portable\client\out-data
+"d:\code\chatlog-ai-portable\client\ChatlogAI.Client\bin\Debug\net8.0-windows\ChatlogAI.exe"
+
+    改完代码重复「第 1 步 -> 第 2 步」即可，不用打包。
+    注意：exe 是前台运行，会占住当前终端；关闭窗口后才会回到提示符。
+
+
+【打包安装程序】（只在验证安装流程 / 出交付包时用，日常开发不需要）
+在仓库根目录 d:\code\chatlog-ai-portable 下执行：
+powershell -ExecutionPolicy Bypass -File .\client\build-installer.ps1
+
+管理员一键启动：
+$env:CHATLOG_ROOT_DIR='d:\code\chatlog-ai-portable'; $env:CHATLOG_DATA_DIR='d:\code\chatlog-ai-portable\client\out-data'; & "d:\code\chatlog-ai-portable\client\ChatlogAI.Client\bin\Debug\net8.0-windows\ChatlogAI.exe"
+
+【附：只有在 Trae 沙箱里由 AI 代跑编译时才需要】
+沙箱禁止读写 %APPDATA%\NuGet，直接编译会报
+「由于未授权访问权限，因此未能读取 NuGet.Config」，需先重定向：
+$env:APPDATA = 'C:\Users\djct\AppData\Local\Temp\trae-appdata'
+$env:NUGET_PACKAGES = 'C:\Users\djct\AppData\Local\Temp\trae-nuget-packages'
+（详见 docs\DOTNET_CLIENT_PLAN.md 第 13.1 节）
+你自己在本地终端编译时不需要这一段。
+
+
+本地运行（管理员终端）：
+$env:CHATLOG_ROOT_DIR = 'd:\code\chatlog-ai-portable'
+$env:CHATLOG_DATA_DIR = 'd:\code\chatlog-ai-portable\client\out-data'
+& "d:\code\chatlog-ai-portable\client\ChatlogAI.Client\bin\Debug\net8.0-windows\ChatlogAI.exe"

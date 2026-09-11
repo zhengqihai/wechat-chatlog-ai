@@ -1,7 +1,0 @@
-{
-  "wechat_account": "",
-  "qq_uin": "",
-  "api_key": "",
-  "base_url": "https://api.deepseek.com",
-  "model": "deepseek-v4-flash"
-}

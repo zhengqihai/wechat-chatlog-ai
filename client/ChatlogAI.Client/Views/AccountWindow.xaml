@@ -1,0 +1,193 @@
+<Window x:Class="ChatlogAI.Client.Views.AccountWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="微信账号"
+        Width="640"
+        MaxHeight="760"
+        SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False"
+        Background="{DynamicResource CardBrush}"
+        Foreground="{DynamicResource TextPrimaryBrush}"
+        FontFamily="Microsoft YaHei UI, Segoe UI"
+        FontSize="13"
+        Icon="pack://application:,,,/Assets/app.ico">
+
+    <!-- 微信账号切换窗口（T19-B，规格见 docs/DOTNET_CLIENT_PLAN.md §7.17）。
+
+         为什么"待确认区"必须排在账号列表之前：待确认 = 发送已被闸门拦住，
+         用户打开这个窗口的唯一原因通常就是"机器人不回复了"。第一眼看不到原因，他就只能猜。
+         不做"隐藏列表直到确认"那种强约束——用户可能同时想看看别的账号是什么状态。 -->
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="20,20,20,0">
+            <!-- ==================== 待确认区（置顶） ==================== -->
+            <Border Padding="14,12"
+                    Margin="0,0,0,16"
+                    CornerRadius="6"
+                    Background="{DynamicResource DangerSoftBrush}"
+                    BorderBrush="{DynamicResource DangerSoftBorderBrush}"
+                    BorderThickness="1"
+                    Visibility="{Binding HasPending, Converter={StaticResource BoolToVis}}">
+                <StackPanel>
+                    <TextBlock Text="⚠ 账号切换待确认"
+                               FontSize="13"
+                               FontWeight="SemiBold"
+                               Foreground="{DynamicResource DangerBrush}" />
+                    <TextBlock Text="{Binding PendingHint}"
+                               Margin="0,6,0,0"
+                               FontSize="12"
+                               TextWrapping="Wrap"
+                               Foreground="{DynamicResource TextSecondaryBrush}" />
+                    <Button Content="我已切换"
+                            Margin="0,10,0,0"
+                            HorizontalAlignment="Left"
+                            Style="{StaticResource PrimaryButton}"
+                            Command="{Binding ConfirmPendingCommand}"
+                            ToolTip="确认微信客户端已经登录新账号，恢复自动发送" />
+                </StackPanel>
+            </Border>
+
+            <!-- ==================== 账号列表 ==================== -->
+            <TextBlock Text="微信账号（数据源一次只读其中一个）"
+                       FontSize="13"
+                       FontWeight="SemiBold"
+                       Foreground="{DynamicResource TextSecondaryBrush}" />
+
+            <!-- 最近一次操作结果：切换成功后放后端返回的 message（含"请把微信客户端切过去"）。 -->
+            <TextBlock Text="{Binding StatusMessage}"
+                       Margin="0,8,0,0"
+                       FontSize="12"
+                       TextWrapping="Wrap"
+                       Foreground="{DynamicResource AccentTextBrush}"
+                       Visibility="{Binding HasStatusMessage, Converter={StaticResource BoolToVis}}" />
+
+            <!-- 列表自带滚动条：账号可能十几条，窗口是 SizeToContent="Height"，不给上限会被撑出屏幕。 -->
+            <ScrollViewer Margin="0,10,0,0"
+                          MaxHeight="340"
+                          HorizontalScrollBarVisibility="Disabled"
+                          VerticalScrollBarVisibility="Auto">
+                <StackPanel>
+                    <TextBlock Text="{Binding Placeholder}"
+                               FontSize="12"
+                               TextWrapping="Wrap"
+                               Foreground="{DynamicResource TextMutedBrush}"
+                               Visibility="{Binding ShowPlaceholder, Converter={StaticResource BoolToVis}}" />
+
+                    <!-- ItemsControl 而不是 ListBox：这里没有"选中某一行"的语义，
+                         每行两个动作各自带 CommandParameter，不需要选中态。 -->
+                    <ItemsControl ItemsSource="{Binding Accounts}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Margin="0,0,0,8"
+                                        Padding="12,10"
+                                        CornerRadius="4"
+                                        Background="{DynamicResource PanelBrush}">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+
+                                        <StackPanel Grid.Column="0" Margin="0,0,10,0">
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="{Binding DisplayName}"
+                                                           FontSize="13"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           Foreground="{DynamicResource TextPrimaryBrush}" />
+
+                                                <!-- 当前账号必须明确标出来：否则用户会以为"没切换成功"。 -->
+                                                <Border Margin="8,0,0,0"
+                                                        Padding="6,1"
+                                                        CornerRadius="3"
+                                                        Background="{DynamicResource AccentSoftBrush}"
+                                                        BorderBrush="{DynamicResource AccentSoftBorderBrush}"
+                                                        BorderThickness="1"
+                                                        Visibility="{Binding IsActive, Converter={StaticResource BoolToVis}}">
+                                                    <TextBlock Text="当前账号"
+                                                               FontSize="11"
+                                                               Foreground="{DynamicResource AccentTextBrush}" />
+                                                </Border>
+                                            </StackPanel>
+
+                                            <TextBlock Text="{Binding Account}"
+                                                       Margin="0,3,0,0"
+                                                       FontSize="11"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       Foreground="{DynamicResource TextMutedBrush}" />
+
+                                            <TextBlock Margin="0,4,0,0"
+                                                       FontSize="11"
+                                                       Foreground="{DynamicResource TextSecondaryBrush}">
+                                                <Run Text="{Binding KeyBadge, Mode=OneWay}" />
+                                                <Run Text=" · " />
+                                                <Run Text="{Binding SwitchableBadge, Mode=OneWay}" />
+                                            </TextBlock>
+                                        </StackPanel>
+
+                                        <!-- 命令住在窗口级 VM 上，而这里的数据上下文是每行的 AccountRowViewModel，
+                                             所以必须 RelativeSource 往上找 Window 再取 DataContext，
+                                             行对象通过 CommandParameter 传进去（与 ModelSettingsWindow 同一写法）。 -->
+                                        <StackPanel Grid.Column="1"
+                                                    Orientation="Horizontal"
+                                                    VerticalAlignment="Center">
+                                            <!-- 未就绪的账号只给授权入口：切过去也只是一片空数据。 -->
+                                            <Button Content="打开授权页"
+                                                    MinWidth="84"
+                                                    Margin="0,0,6,0"
+                                                    Padding="10,4"
+                                                    FontSize="12"
+                                                    Visibility="{Binding CanResolve, Converter={StaticResource BoolToVis}}"
+                                                    Command="{Binding DataContext.OpenAuthorizeCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                    CommandParameter="{Binding}" />
+                                            <Button Content="切换到此账号"
+                                                    MinWidth="96"
+                                                    Padding="10,4"
+                                                    FontSize="12"
+                                                    Style="{StaticResource PrimaryButton}"
+                                                    IsEnabled="{Binding CanSwitch}"
+                                                    Command="{Binding DataContext.SwitchCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                    CommandParameter="{Binding}" />
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </ScrollViewer>
+
+            <!-- ==================== 授权等待提示 ==================== -->
+            <Border Margin="0,12,0,0"
+                    Padding="12,8"
+                    CornerRadius="4"
+                    Background="{DynamicResource PanelBrush}"
+                    BorderBrush="{DynamicResource LineBrush}"
+                    BorderThickness="1"
+                    Visibility="{Binding HasAuthorizeStatus, Converter={StaticResource BoolToVis}}">
+                <TextBlock Text="{Binding AuthorizeStatus}"
+                           FontSize="12"
+                           TextWrapping="Wrap"
+                           Foreground="{DynamicResource TextSecondaryBrush}" />
+            </Border>
+        </StackPanel>
+
+        <Border Grid.Row="1"
+                Margin="0,20,0,0"
+                Padding="20,12"
+                Background="{DynamicResource PanelBrush}"
+                BorderBrush="{DynamicResource LineBrush}"
+                BorderThickness="0,1,0,0">
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button Content="刷新" Margin="0,0,8,0" Command="{Binding RefreshCommand}" />
+                <Button Content="关闭" Click="OnCloseClick" />
+            </StackPanel>
+        </Border>
+    </Grid>
+</Window>

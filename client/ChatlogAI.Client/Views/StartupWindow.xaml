@@ -1,0 +1,141 @@
+<Window x:Class="ChatlogAI.Client.Views.StartupWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Chatlog AI"
+        Height="480" Width="640"
+        WindowStartupLocation="CenterScreen"
+        ResizeMode="NoResize"
+        ShowInTaskbar="True"
+        Background="{DynamicResource PageBrush}"
+        Foreground="{DynamicResource TextPrimaryBrush}"
+        FontFamily="Microsoft YaHei UI, Segoe UI"
+        Icon="pack://application:,,,/Assets/app.ico">
+
+    <!-- 本窗口是"去控制台化"的载体：原来 launcher.py 的 print 输出全部落到这里的日志区。
+         配色/控件样式一律来自 App.xaml 挂载的 Themes/Theme.xaml，本窗口不再自带样式，
+         避免出现"主界面改了、启动页忘了改"的色值漂移。 -->
+
+    <Grid>
+        <Grid Margin="24">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <TextBlock Grid.Row="0"
+                       Text="Chatlog AI"
+                       FontSize="22"
+                       FontWeight="SemiBold"
+                       Foreground="{DynamicResource TextPrimaryBrush}" />
+
+            <TextBlock x:Name="StatusText"
+                       Grid.Row="1"
+                       Margin="0,12,0,0"
+                       FontSize="13"
+                       TextWrapping="Wrap"
+                       Foreground="{DynamicResource TextSecondaryBrush}"
+                       Text="正在准备……" />
+
+            <Border Grid.Row="2"
+                    Margin="0,16,0,0"
+                    Background="{DynamicResource CardBrush}"
+                    BorderBrush="{DynamicResource LineBrush}"
+                    BorderThickness="1"
+                    CornerRadius="6"
+                    Padding="4">
+                <!-- 日志区：等宽字体 + 顶部对齐 + 双向滚动条。
+                     VerticalContentAlignment=Top 会透传到模板里决定内容是从顶部排版还是垂直居中，
+                     这正是多行文本需要的（见 Themes/Theme.xaml §10）。 -->
+                <TextBox x:Name="LogBox"
+                         Background="Transparent"
+                         BorderThickness="0"
+                         Foreground="{DynamicResource TextSecondaryBrush}"
+                         FontFamily="Consolas, Cascadia Mono"
+                         FontSize="12"
+                         IsReadOnly="True"
+                         IsReadOnlyCaretVisible="False"
+                         TextWrapping="NoWrap"
+                         VerticalContentAlignment="Top"
+                         VerticalScrollBarVisibility="Auto"
+                         HorizontalScrollBarVisibility="Auto" />
+            </Border>
+
+            <StackPanel Grid.Row="3"
+                        Orientation="Horizontal"
+                        HorizontalAlignment="Right"
+                        Margin="0,16,0,0">
+                <Button x:Name="OpenAuthButton"
+                        Content="打开授权页面"
+                        MinWidth="92"
+                        Margin="8,0,0,0"
+                        Visibility="Collapsed"
+                        Click="OnOpenAuthorizationPageClick" />
+                <Button x:Name="ConfirmButton"
+                        Content="继续"
+                        Style="{StaticResource PrimaryButton}"
+                        MinWidth="92"
+                        Margin="8,0,0,0"
+                        Visibility="Collapsed"
+                        Click="OnConfirmClick" />
+                <Button x:Name="ExitButton"
+                        Content="退出"
+                        MinWidth="92"
+                        Margin="8,0,0,0"
+                        Click="OnExitClick" />
+            </StackPanel>
+        </Grid>
+
+        <!-- 账号选择遮罩：先做"内联遮罩"而不是独立窗口，避免多窗口的生命周期与焦点管理复杂度；
+             只有在后续需要复用到主界面时，才值得抽成独立对话框。 -->
+        <Grid x:Name="AccountPanel"
+              Background="{DynamicResource OverlayBrush}"
+              Visibility="Collapsed">
+            <Border Width="440"
+                    Background="{DynamicResource CardBrush}"
+                    BorderBrush="{DynamicResource LineBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="20"
+                    VerticalAlignment="Center"
+                    HorizontalAlignment="Center">
+                <StackPanel>
+                    <TextBlock Text="检测到多个微信账号"
+                               FontSize="16"
+                               FontWeight="SemiBold"
+                               Foreground="{DynamicResource TextPrimaryBrush}" />
+                    <TextBlock Margin="0,8,0,0"
+                               FontSize="12"
+                               TextWrapping="Wrap"
+                               Foreground="{DynamicResource TextSecondaryBrush}"
+                               Text="请选择要使用的账号。选择结果会写入 config.json 供后端读取；不确定时保持当前即可。" />
+                    <ListBox x:Name="AccountList"
+                             Margin="0,14,0,0"
+                             Height="200"
+                             Background="{DynamicResource CardBrush}"
+                             BorderBrush="{DynamicResource ControlBorderBrush}"
+                             BorderThickness="1"
+                             DisplayMemberPath="Display" />
+                    <TextBlock x:Name="AccountHintText"
+                               Margin="0,8,0,0"
+                               FontSize="12"
+                               Foreground="{DynamicResource TextMutedBrush}" />
+                    <StackPanel Orientation="Horizontal"
+                                HorizontalAlignment="Right"
+                                Margin="0,16,0,0">
+                        <Button Content="保持当前"
+                                MinWidth="92"
+                                Margin="8,0,0,0"
+                                Click="OnAccountSkipClick" />
+                        <Button Content="确定"
+                                Style="{StaticResource PrimaryButton}"
+                                MinWidth="92"
+                                Margin="8,0,0,0"
+                                Click="OnAccountConfirmClick" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </Grid>
+    </Grid>
+</Window>

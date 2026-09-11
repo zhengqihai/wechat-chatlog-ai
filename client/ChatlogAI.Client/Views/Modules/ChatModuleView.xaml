@@ -1,0 +1,668 @@
+<UserControl x:Class="ChatlogAI.Client.Views.Modules.ChatModuleView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             FontFamily="Microsoft YaHei UI, Segoe UI"
+             Foreground="{DynamicResource TextPrimaryBrush}">
+
+    <!-- 聊天模块（T16）：原主界面第 1/2/3 栏整体搬入，行为一字不改。
+         内部三列（会话 240 / 消息+筛选 * / AI 360）留在本控件里，
+         因为"某一栏多宽"是模块内部的事，MainWindow 只该关心 56 + *。
+
+         本控件刻意不设置 DataContext：它继承 MainWindow 的 DataContext（MainViewModel），
+         下面那些 {Binding DataContext.XXX, RelativeSource={RelativeSource AncestorType=Window}}
+         才找得到正确的上下文（见 docs/DOTNET_CLIENT_PLAN.md §14.2.3 第 2 条的同源问题）。 -->
+
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="240" MinWidth="220" />
+            <ColumnDefinition Width="*" MinWidth="440" />
+            <ColumnDefinition Width="360" MinWidth="340" />
+        </Grid.ColumnDefinitions>
+
+        <!-- ==================== 第 0 栏：会话列表 ==================== -->
+        <Border Grid.Column="0"
+                Background="{DynamicResource CardBrush}"
+                BorderBrush="{DynamicResource LineBrush}"
+                BorderThickness="0,0,1,0">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <!-- 「退出」已搬到图标栏底部（T16：退出是窗口级动作，不属于某个模块）。 -->
+                <TextBlock Grid.Row="0"
+                           Text="Chatlog AI"
+                           Margin="14,14,14,10"
+                           FontSize="17"
+                           FontWeight="SemiBold"
+                           Foreground="{DynamicResource TextPrimaryBrush}" />
+
+                <!-- 数据源状态：绿点 = 已就绪，红点 = 未接入（对应 #sourceStatus / IsSourceReady）。 -->
+                <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="14,0,14,10">
+                    <Ellipse Width="8" Height="8" VerticalAlignment="Center">
+                        <Ellipse.Style>
+                            <Style TargetType="Ellipse">
+                                <Setter Property="Fill" Value="{DynamicResource DangerBrush}" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsSourceReady}" Value="True">
+                                        <Setter Property="Fill" Value="{DynamicResource SuccessBrush}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Ellipse.Style>
+                    </Ellipse>
+                    <TextBlock Text="{Binding SourceStatus}"
+                               Margin="8,0,0,0"
+                               FontSize="12"
+                               Foreground="{DynamicResource TextMutedBrush}"
+                               TextTrimming="CharacterEllipsis" />
+                </StackPanel>
+
+                <!-- 搜索框：UpdateSourceTrigger=PropertyChanged 对应原前端的 oninput（逐字过滤）。 -->
+                <Grid Grid.Row="2" Margin="14,0,14,10">
+                    <TextBox Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}" />
+                    <TextBlock Text="搜索会话"
+                               Margin="10,0,0,0"
+                               VerticalAlignment="Center"
+                               FontSize="13"
+                               Foreground="{DynamicResource TextMutedBrush}"
+                               IsHitTestVisible="False">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding SearchText}" Value="">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </Grid>
+
+                <ListBox Grid.Row="3"
+                         x:Name="ChatList"
+                         ItemsSource="{Binding Chats}"
+                         SelectedItem="{Binding SelectedChat, Mode=TwoWay}"
+                         Background="Transparent"
+                         BorderThickness="0"
+                         Padding="0,0,0,10"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <Grid Margin="12,8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+
+                                <Border Grid.Column="0"
+                                        Width="36" Height="36"
+                                        CornerRadius="18"
+                                        Background="{DynamicResource SubtleBrush}">
+                                    <TextBlock Text="{Binding AvatarText}"
+                                               FontSize="13"
+                                               Foreground="{DynamicResource TextSecondaryBrush}"
+                                               HorizontalAlignment="Center"
+                                               VerticalAlignment="Center" />
+                                </Border>
+
+                                <StackPanel Grid.Column="1" Margin="10,0,8,0" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding Name}"
+                                               FontSize="13"
+                                               Foreground="{DynamicResource TextPrimaryBrush}"
+                                               TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Text="{Binding Preview}"
+                                               Margin="0,3,0,0"
+                                               FontSize="12"
+                                               Foreground="{DynamicResource TextMutedBrush}"
+                                               TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
+
+                                <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding TimeText}"
+                                               FontSize="11"
+                                               Foreground="{DynamicResource TextMutedBrush}"
+                                               HorizontalAlignment="Right" />
+                                    <Border Margin="0,4,0,0"
+                                            Padding="5,1"
+                                            CornerRadius="8"
+                                            Background="{DynamicResource DangerBrush}"
+                                            HorizontalAlignment="Right"
+                                            Visibility="{Binding HasUnread, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="{Binding UnreadText}"
+                                                   FontSize="10"
+                                                   Foreground="{DynamicResource TextOnAccentBrush}" />
+                                    </Border>
+                                </StackPanel>
+                            </Grid>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+
+                <!-- 空态与列表同格、后声明，靠 Z 序盖在列表上；HasChats 为真时自动折叠。 -->
+                <TextBlock Grid.Row="3"
+                           Text="{Binding ChatsPlaceholder}"
+                           Margin="14,20,14,0"
+                           VerticalAlignment="Top"
+                           FontSize="13"
+                           TextWrapping="Wrap"
+                           Foreground="{DynamicResource TextMutedBrush}">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding HasChats}" Value="False">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+            </Grid>
+        </Border>
+
+        <!-- ==================== 第 1 栏：消息 + 筛选 ==================== -->
+        <Grid Grid.Column="1" Background="{DynamicResource CardBrush}">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <!-- 行 0：会话标题（对照 #chatTitle / #chatSubtitle）。
+                 ChatTitle/ChatSubtitle 在 VM 里是私有 setter，只能单向读。
+                 「导出」放在这里而不是图标栏：导出永远需要一个"导什么"的上下文，
+                 脱离上下文的导出按钮还得再问一次"导哪个"（见 §14.2.2）。 -->
+            <Grid Grid.Row="0" Margin="18,16,18,12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" Margin="0,0,12,0">
+                    <TextBlock Text="{Binding ChatTitle}"
+                               FontSize="16"
+                               FontWeight="SemiBold"
+                               Foreground="{DynamicResource TextPrimaryBrush}"
+                               TextTrimming="CharacterEllipsis" />
+                    <TextBlock Text="{Binding ChatSubtitle}"
+                               Margin="0,4,0,0"
+                               FontSize="12"
+                               Foreground="{DynamicResource TextMutedBrush}"
+                               TextTrimming="CharacterEllipsis" />
+                </StackPanel>
+
+                <Button Grid.Column="1"
+                        Content="导出"
+                        VerticalAlignment="Top"
+                        Padding="10,4"
+                        MinWidth="0"
+                        Click="OnExportClick"
+                        ToolTip="导出当前会话在时间范围内的全部消息（上限 2000 条）" />
+            </Grid>
+
+            <!-- 行 1：筛选区（对照 .filter-row）。
+                 这次改造的重点。原来的问题是"糊成一片"：
+                 - 标签 #8A8F9C 压在 #1E1E24 上只有约 2.6:1，本来就难认；
+                 - 输入框/下拉框/边框与背景彼此只差一两档灰，控件边界消失；
+                 - 选"不限"时两个框 IsEnabled=False，被默认模板整体降透明度，等于消失。
+                 现在：整条筛选区铺浅灰底（PanelBrush），白底控件立刻"浮"出来；
+                 标签改用 TextSecondaryBrush（约 5.3:1）；禁用态走 Theme.xaml 里
+                 自定义的"灰底 + 深灰可读字"，不再依赖默认模板的降透明度。
+                 ComboBox 用 Tag 承载取值，靠 SelectedValuePath 把 Tag 映射回
+                 VM 里的字符串（none/recent/minutes/hours/days）。
+                 这一条横向 StackPanel 的天然宽度约 640px 且不换行，是 MinWidth 的算据之一。 -->
+            <Grid Grid.Row="1" Background="{DynamicResource PanelBrush}">
+                <StackPanel Orientation="Horizontal" Margin="18,10,18,10">
+                    <TextBlock Text="时间范围"
+                               VerticalAlignment="Center"
+                               FontSize="12"
+                               Foreground="{DynamicResource TextSecondaryBrush}" />
+                    <ComboBox Width="80"
+                              Margin="8,0,0,0"
+                              ToolTip="不限：读取全部历史；最近：只读取指定时间窗内的消息"
+                              SelectedValue="{Binding TimeMode, Mode=TwoWay}"
+                              SelectedValuePath="Tag">
+                        <ComboBoxItem Content="不限" Tag="none" />
+                        <ComboBoxItem Content="最近" Tag="recent" />
+                    </ComboBox>
+                    <TextBox Width="70"
+                             Margin="8,0,0,0"
+                             Text="{Binding TimeValue}"
+                             ToolTip="仅当左侧选择「最近」时生效"
+                             IsEnabled="{Binding IsTimeRangeEnabled}" />
+                    <ComboBox Width="80"
+                              Margin="8,0,0,0"
+                              ToolTip="仅当左侧选择「最近」时生效"
+                              SelectedValue="{Binding TimeUnit, Mode=TwoWay}"
+                              SelectedValuePath="Tag"
+                              IsEnabled="{Binding IsTimeRangeEnabled}">
+                        <ComboBoxItem Content="分钟" Tag="minutes" />
+                        <ComboBoxItem Content="小时" Tag="hours" />
+                        <ComboBoxItem Content="天" Tag="days" />
+                    </ComboBox>
+                    <TextBlock Text="条数"
+                               Margin="18,0,0,0"
+                               VerticalAlignment="Center"
+                               FontSize="12"
+                               Foreground="{DynamicResource TextSecondaryBrush}" />
+                    <ComboBox Width="80"
+                              Margin="8,0,0,0"
+                              ToolTip="全部：不限条数；最近：只读取最近 N 条"
+                              SelectedValue="{Binding CountMode, Mode=TwoWay}"
+                              SelectedValuePath="Tag">
+                        <ComboBoxItem Content="全部" Tag="unlimited" />
+                        <ComboBoxItem Content="最近" Tag="recent" />
+                    </ComboBox>
+                    <TextBox Width="70"
+                             Margin="8,0,0,0"
+                             Text="{Binding CountInput}"
+                             ToolTip="仅当左侧选择「最近」时生效"
+                             IsEnabled="{Binding IsCountInputEnabled}" />
+                    <Button Content="应用"
+                            Margin="18,0,0,0"
+                            Style="{StaticResource PrimaryButton}"
+                            Command="{Binding ApplyFilterCommand}" />
+                </StackPanel>
+            </Grid>
+
+            <!-- 行 2：筛选区下边框（对照 .filter-row 的下边框）。 -->
+            <Border Grid.Row="2" Height="1" Background="{DynamicResource LineBrush}" />
+
+            <!-- 行 3：消息列表（对照 #messageList）。
+                 必须用 ListBox 而不是 ScrollViewer + ItemsControl：单会话最多 2000 条，
+                 只有 ListBox 带容器虚拟化，换成 ItemsControl 会一次性生成 2000 个可视节点。 -->
+            <ListBox Grid.Row="3"
+                     x:Name="MessageList"
+                     ItemsSource="{Binding Messages}"
+                     Background="Transparent"
+                     BorderThickness="0"
+                     Padding="18,12,18,18"
+                     ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <!-- IsSelf 决定左右对齐与底色（对照 .message.mine）。
+                             注意：HorizontalAlignment / Background 必须写在 Style 里，
+                             一旦写成元素上的局部值，就会盖过 DataTrigger 的 Setter。
+                             自己发的消息用"浅绿底 + 深字"，不用整块高饱和色：
+                             长文本铺高饱和底色会晃眼，这正是旧版整块 #2F6FEB 最刺眼的地方。 -->
+                        <Border Margin="0,0,0,10"
+                                MaxWidth="520"
+                                Padding="10,8"
+                                CornerRadius="6"
+                                BorderThickness="1">
+                            <Border.Style>
+                                <Style TargetType="Border">
+                                    <Setter Property="HorizontalAlignment" Value="Left" />
+                                    <Setter Property="Background" Value="{DynamicResource PanelBrush}" />
+                                    <Setter Property="BorderBrush" Value="{DynamicResource LineBrush}" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsSelf}" Value="True">
+                                            <Setter Property="HorizontalAlignment" Value="Right" />
+                                            <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
+                                            <Setter Property="BorderBrush" Value="{DynamicResource AccentSoftBorderBrush}" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Style>
+                            <StackPanel>
+                                <TextBlock Text="{Binding Sender}"
+                                           FontSize="11"
+                                           Foreground="{DynamicResource TextSecondaryBrush}" />
+
+                                <!-- 图片消息：仅 IsImage 时显示。
+                                     Source 绑 null（非图片消息）不触发类型转换，因此不会刷绑定错误。
+                                     Stretch=Uniform 配合 MaxWidth/MaxHeight，保证长图不被裁剪、
+                                     也不会有一张图撑破气泡或吃掉整屏。 -->
+                                <Image Source="{Binding ImageUrl}"
+                                       Margin="0,6,0,0"
+                                       MaxWidth="360"
+                                       MaxHeight="360"
+                                       Stretch="Uniform"
+                                       HorizontalAlignment="Left">
+                                    <Image.Style>
+                                        <Style TargetType="Image">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsImage}" Value="True">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Image.Style>
+                                </Image>
+
+                                <!-- 文本正文：图片消息下折叠，避免同时出现图片与 [图片] 标签。
+                                     Visibility 写在 Style 里，不用元素局部值，与上方 Image 同一模式。 -->
+                                <TextBlock Text="{Binding Content}"
+                                           Margin="0,4,0,0"
+                                           FontSize="13"
+                                           Foreground="{DynamicResource TextPrimaryBrush}"
+                                           TextWrapping="Wrap">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsImage}" Value="True">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                                <TextBlock Text="{Binding Time}"
+                                           Margin="0,4,0,0"
+                                           FontSize="10"
+                                           Foreground="{DynamicResource TextMutedBrush}"
+                                           HorizontalAlignment="Right" />
+                            </StackPanel>
+                        </Border>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+            <!-- 空态：与列表同格、后声明，靠 Z 序盖在上面；HasMessages 为真时自动折叠。
+                 文案由 VM 给（"正在读取真实消息" / "当前筛选条件下没有消息" / 接口异常信息）。 -->
+            <TextBlock Grid.Row="3"
+                       Text="{Binding MessagesPlaceholder}"
+                       Margin="18,24,18,0"
+                       VerticalAlignment="Top"
+                       FontSize="13"
+                       TextWrapping="Wrap"
+                       Foreground="{DynamicResource TextMutedBrush}">
+                <TextBlock.Style>
+                    <Style TargetType="TextBlock">
+                        <Setter Property="Visibility" Value="Collapsed" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding HasMessages}" Value="False">
+                                <Setter Property="Visibility" Value="Visible" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBlock.Style>
+            </TextBlock>
+        </Grid>
+
+        <!-- ==================== 第 2 栏：AI 分析 ====================
+             只保留"分析"本身：生成分析 + 四个预设 + AI 对话 + 提问框。
+             模型设置 / 自动回复入口在「设置」模块，导出在本模块工具栏。 -->
+        <Border Grid.Column="2"
+                Background="{DynamicResource PanelBrush}"
+                BorderBrush="{DynamicResource LineBrush}"
+                BorderThickness="1,0,0,0">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <StackPanel Grid.Row="0" Margin="16,16,16,10">
+                    <TextBlock Text="AI 分析"
+                               FontSize="16"
+                               FontWeight="SemiBold"
+                               Foreground="{DynamicResource TextPrimaryBrush}" />
+                    <TextBlock Text="{Binding ModelStatus}"
+                               Margin="0,4,0,0"
+                               FontSize="12"
+                               Foreground="{DynamicResource TextMutedBrush}"
+                               TextWrapping="Wrap" />
+                </StackPanel>
+
+                <!-- 「生成分析」是全应用的主动作，独占一行；其余三个入口已搬到最左侧栏。
+                     原来这里是 WrapPanel 挂四个按钮，现在只剩一个，WrapPanel 的换行能力已无意义。 -->
+                <Button Grid.Row="1"
+                        Content="生成分析"
+                        Margin="16,0,16,10"
+                        MinHeight="34"
+                        Style="{StaticResource PrimaryButton}"
+                        Command="{Binding RunPresetCommand}" />
+                <!-- 行 2：四个分析预设（对照 .analysis-tab[data-type]）。
+                     这里用普通 Button + DataTrigger 表达"选中态"，而不是 RadioButton：
+                     RadioButton 的 IsChecked 若做 OneWay 绑定，用户点击会写入局部值并顶掉绑定，
+                     结果是"点过一次之后按钮状态就再也不跟随 VM 了"。
+                     选中态用"浅绿底 + 绿字 + 浅绿边框"，而不是再铺一块高饱和绿：
+                     同一栏里已经有绿色的"生成分析"主按钮，四处再铺满绿会抢焦点。
+                     注意 DataTrigger 必须同时改 Foreground，否则深色文字压在绿底上会糊掉
+                     ——旧版只改了 Background，在深色主题下恰好蒙混过关。 -->
+                <StackPanel Grid.Row="2" Margin="16,0,16,0">
+                    <UniformGrid Rows="1" Columns="4">
+                        <Button Content="综合总结" Margin="0,0,4,0"
+                                Command="{Binding SelectAnalysisTypeCommand}" CommandParameter="general">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsGeneralTab}" Value="True">
+                                            <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
+                                            <Setter Property="BorderBrush" Value="{DynamicResource AccentSoftBorderBrush}" />
+                                            <Setter Property="Foreground" Value="{DynamicResource AccentFillBrush}" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
+                        <Button Content="会议纪要" Margin="4,0,4,0"
+                                Command="{Binding SelectAnalysisTypeCommand}" CommandParameter="meeting">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsMeetingTab}" Value="True">
+                                            <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
+                                            <Setter Property="BorderBrush" Value="{DynamicResource AccentSoftBorderBrush}" />
+                                            <Setter Property="Foreground" Value="{DynamicResource AccentFillBrush}" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
+                        <Button Content="待办事项" Margin="4,0,4,0"
+                                Command="{Binding SelectAnalysisTypeCommand}" CommandParameter="todo">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsTodoTab}" Value="True">
+                                            <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
+                                            <Setter Property="BorderBrush" Value="{DynamicResource AccentSoftBorderBrush}" />
+                                            <Setter Property="Foreground" Value="{DynamicResource AccentFillBrush}" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
+                        <Button Content="话题热点" Margin="4,0,0,0"
+                                Command="{Binding SelectAnalysisTypeCommand}" CommandParameter="topics">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsTopicsTab}" Value="True">
+                                            <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
+                                            <Setter Property="BorderBrush" Value="{DynamicResource AccentSoftBorderBrush}" />
+                                            <Setter Property="Foreground" Value="{DynamicResource AccentFillBrush}" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
+                    </UniformGrid>
+
+                    <Grid Margin="0,10,0,0">
+                        <TextBlock Text="{Binding AnalysisCount}"
+                                   VerticalAlignment="Center"
+                                   FontSize="12"
+                                   Foreground="{DynamicResource TextMutedBrush}"
+                                   TextTrimming="CharacterEllipsis" />
+                        <Button Content="清空对话"
+                                HorizontalAlignment="Right"
+                                Padding="8,3"
+                                MinWidth="0"
+                                FontSize="11"
+                                Command="{Binding ClearAiThreadCommand}" />
+                    </Grid>
+                </StackPanel>
+
+                <!-- 行 3：AI 对话（对照 #aiThread）。
+                     刻意用 ScrollViewer + ItemsControl 而不是 ListBox：
+                     AiThreadItemViewModel.Content 是 MarkdownRenderer 产出的 FlowDocument，
+                     ListBox 的容器虚拟化/回收会让同一个 FlowDocument 先后挂到两个
+                     FlowDocumentScrollViewer 上，触发"文档已有父级"异常；且 AI 对话轮数很少。
+                     气泡底色从"深色"改成"白底 + 细边框"，因为正文文字现在也是深色：
+                     MarkdownRenderer 的取色已经改为跟主题同源，两边不会再各走各的。 -->
+                <Grid Grid.Row="3">
+                    <ScrollViewer x:Name="AiThreadScroll"
+                                  VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled"
+                                  Padding="16,0,16,16">
+                        <ItemsControl ItemsSource="{Binding AiThread}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Margin="0,0,0,10"
+                                            Padding="10,8"
+                                            CornerRadius="6"
+                                            BorderThickness="1">
+                                        <Border.Style>
+                                            <Style TargetType="Border">
+                                                <Setter Property="Background" Value="{DynamicResource CardBrush}" />
+                                                <Setter Property="BorderBrush" Value="{DynamicResource LineBrush}" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsError}" Value="True">
+                                                        <Setter Property="Background" Value="{DynamicResource DangerSoftBrush}" />
+                                                        <Setter Property="BorderBrush" Value="{DynamicResource DangerSoftBorderBrush}" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Border.Style>
+                                        <StackPanel>
+                                            <Grid>
+                                                <TextBlock Text="{Binding RoleName}"
+                                                           FontSize="11"
+                                                           Foreground="{DynamicResource TextMutedBrush}" />
+                                                <!-- 复制按钮只对 AI 回答显示（CanCopy => !IsUser）；
+                                                     命令挂在 Window 的 DataContext 上，参数是当前行 VM。
+                                                     必须沿可视树往上找窗口：行内 DataContext 是
+                                                     AiThreadItemViewModel，只有 Window 那一层才是 MainViewModel。 -->
+                                                <Button Content="复制"
+                                                        HorizontalAlignment="Right"
+                                                        Padding="6,2"
+                                                        MinWidth="0"
+                                                        FontSize="10"
+                                                        Command="{Binding DataContext.CopyAiTurnCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                        CommandParameter="{Binding}">
+                                                    <Button.Style>
+                                                        <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                                            <Setter Property="Visibility" Value="Collapsed" />
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding CanCopy}" Value="True">
+                                                                    <Setter Property="Visibility" Value="Visible" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Button.Style>
+                                                </Button>
+                                            </Grid>
+                                            <!-- 用户提问：VM 里 Content 为 null，走纯文本分支。 -->
+                                            <TextBlock Margin="0,6,0,0"
+                                                       FontSize="13"
+                                                       Foreground="{DynamicResource TextPrimaryBrush}"
+                                                       TextWrapping="Wrap"
+                                                       Text="{Binding RawContent}">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock">
+                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding IsUser}" Value="True">
+                                                                <Setter Property="Visibility" Value="Visible" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
+
+                                            <!-- AI 回答：Content 是 MarkdownRenderer 渲染好的 FlowDocument。
+                                                 自带滚动条必须关掉，否则每条回答内部都会长出一条。 -->
+                                            <FlowDocumentScrollViewer Margin="0,6,0,0"
+                                                                      Document="{Binding Content}"
+                                                                      Background="Transparent"
+                                                                      BorderThickness="0"
+                                                                      VerticalScrollBarVisibility="Disabled"
+                                                                      HorizontalScrollBarVisibility="Disabled">
+                                                <FlowDocumentScrollViewer.Style>
+                                                    <Style TargetType="FlowDocumentScrollViewer">
+                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding IsUser}" Value="False">
+                                                                <Setter Property="Visibility" Value="Visible" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </FlowDocumentScrollViewer.Style>
+                                            </FlowDocumentScrollViewer>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                    <!-- AI 对话空态：与列表同格、后声明，靠 Z 序盖在上面。 -->
+                    <TextBlock Text="选择会话后可生成分析，或直接在下方提问"
+                               Margin="16,20,16,0"
+                               VerticalAlignment="Top"
+                               FontSize="12"
+                               TextWrapping="Wrap"
+                               Foreground="{DynamicResource TextMutedBrush}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding HasAiThread}" Value="False">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </Grid>
+                <!-- 行 4：提问输入（对照 #promptInput + 「发送」）。 -->
+                <Grid Grid.Row="4" Margin="16,0,16,16">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <Grid Grid.Column="0">
+                        <TextBox Text="{Binding CustomPrompt, UpdateSourceTrigger=PropertyChanged}" />
+                        <TextBlock Text="向 AI 提问"
+                                   Margin="10,0,0,0"
+                                   VerticalAlignment="Center"
+                                   FontSize="13"
+                                   Foreground="{DynamicResource TextMutedBrush}"
+                                   IsHitTestVisible="False">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding CustomPrompt}" Value="">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </Grid>
+
+                    <Button Grid.Column="1"
+                            Content="发送"
+                            Margin="8,0,0,0"
+                            Style="{StaticResource PrimaryButton}"
+                            Command="{Binding SendCustomPromptCommand}" />
+                </Grid>
+            </Grid>
+        </Border>
+    </Grid>
+</UserControl>
