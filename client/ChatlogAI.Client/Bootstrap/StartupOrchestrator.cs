@@ -66,7 +66,9 @@ public sealed class StartupOrchestrator : IDisposable
         _interaction = interaction;
         _forceInitialize = forceInitialize;
         _bootstrapper = new ConfigBootstrapper(_paths);
-        _authWatcher = new WechatAuthWatcher(_paths.WechatAccountKeysFile);
+        // 两个密钥来源都认：上游产出的 account_keys.json，与我们自己的 config/wechat-keys.json。
+        // 上游被移除后，后者是唯一的密钥来源（也是「微信账号」窗口手动导入的落点）。
+        _authWatcher = new WechatAuthWatcher(_paths.LocalKeysFile, _paths.WechatAccountKeysFile);
         _accountEnumerator = new WechatAccountEnumerator(_paths, _http);
     }
 
@@ -81,14 +83,17 @@ public sealed class StartupOrchestrator : IDisposable
     {
         try
         {
-            // 等价 authorize_needed = force_initialize or not has_wechat_key()。
-            var authorizeNeeded = _forceInitialize || !_authWatcher.HasWechatKey();
+            // 密钥是否已就绪（等价 has_wechat_key()）。上游被移除后这条仍要成立：
+            // 只要 config/wechat-keys.json 里有非空 db_key，就不该再让用户去"授权"。
+            var keyAvailable = _authWatcher.HasWechatKey();
+            // "需要授权流程"= 密钥还没有，或用户显式要求重新初始化。
+            var needsAuthorizeFlow = _forceInitialize || !keyAvailable;
 
             // 等价 Python 的 is_admin() 判定。原版是"非管理员就给一段提示然后退出"，
             // 因为读微信数据库必须有管理员权限。.NET 版已在 app.manifest 里声明
             // requireAdministrator，正常双击必然提权；这里的判定是兜底，
             // 防止 manifest 被绕过时表现为"点了没反应"（方案 R11）。
-            if (authorizeNeeded && !Environment.IsPrivilegedProcess)
+            if (needsAuthorizeFlow && !Environment.IsPrivilegedProcess)
             {
                 return StartupResult.Fail(
                     "检测到微信数据源尚未完成授权，而读取微信数据需要管理员权限。\n"
@@ -103,12 +108,15 @@ public sealed class StartupOrchestrator : IDisposable
             DeleteShutdownFile();
             _bootstrapper.RequirePaths();
 
-            // ---------- 阶段 1：启动微信数据源 ----------
-            PortGuard.EnsurePortFree(AppPaths.WechatPort);
-            await StartWechatServiceAsync(cancellationToken).ConfigureAwait(true);
+            // ---------- 阶段 1：启动微信数据源（**可选**） ----------
+            var upstreamReady = await StartWechatServiceAsync(cancellationToken).ConfigureAwait(true);
 
             // ---------- 阶段 2：授权判定 ----------
-            if (authorizeNeeded)
+            // 只有**上游真的可用**时才谈得上进授权页 —— 那个页面本身就是上游提供的（10392）。
+            // 上游不可用时绝不能进这条分支：授权页打不开（只 Report 一句），而紧接着的
+            // WaitAsync 会**永久等一个永远不会出现的密钥文件** —— 表现为界面一直停在
+            // "正在等待微信授权完成"，不报错也不超时，是最难查的一种故障。
+            if (upstreamReady && needsAuthorizeFlow)
             {
                 var result = await EnsureAuthorizedAsync(cancellationToken).ConfigureAwait(true);
                 if (result is not null)
@@ -116,9 +124,18 @@ public sealed class StartupOrchestrator : IDisposable
                     return result;
                 }
             }
+            else if (keyAvailable)
+            {
+                _interaction.Report("已检测到微信数据源密钥，直接启动分析服务。");
+            }
             else
             {
-                _interaction.Report("已检测到微信数据源授权，直接启动分析服务。");
+                // 没密钥也**不能**拦在这里：手动导入密钥的入口在「微信账号」窗口里，
+                // 拦住启动就等于把唯一的补救入口一起关掉。带着"聊天数据不可用"继续起来，
+                // 由界面提示用户去导入。
+                _interaction.Report(
+                    "未找到微信数据库密钥：聊天数据将不可用。"
+                    + "请在「微信账号」窗口手动导入密钥，或恢复上游实时数据源后重新授权。");
             }
 
             // ---------- 阶段 3：账号选择 ----------
@@ -227,8 +244,28 @@ public sealed class StartupOrchestrator : IDisposable
 
     // ---------- 阶段 1 ----------
 
-    private async Task StartWechatServiceAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// 启动上游实时数据源（broker → wechat-backend.exe，等 10392 健康检查）。
+    /// 返回 **上游是否真的可用** —— 这个返回值同时决定阶段 2 要不要走授权页。
+    ///
+    /// 阶段 D3 起上游是**可选**的：自研链路已接管会话/消息、通讯录+头像、朋友圈时间线+用户、
+    /// 朋友圈导出，上游只剩「媒体本体（图片/语音/视频）」与账号枚举。所以三处都要"降级而不阻断"：
+    ///   1. `wechat-backend.exe` 不存在（已被移除）→ 直接返回 false，**不再白等 180 秒**健康检查；
+    ///   2. broker 不存在 → 跳过（这里原本就有此判断）；
+    ///   3. 健康检查失败 → Report 一句原因后返回 false，**不抛异常**（原来会 fail 整个启动）。
+    /// 第 3 条是关键：上游当前因为拿不到 lease 本来就起不来，而它挂了不该让整个程序打不开。
+    /// </summary>
+    private async Task<bool> StartWechatServiceAsync(CancellationToken cancellationToken)
     {
+        if (!File.Exists(_paths.WechatBackendExe))
+        {
+            _interaction.Report("未检测到上游实时数据源，使用本地解密链路（自研）。");
+            return false;
+        }
+
+        // 只有真要拉起上游时才清端口：上游被移除后，这行会去动一个与我们无关的端口。
+        PortGuard.EnsurePortFree(AppPaths.WechatPort);
+
         // broker 必须先于 backend 拉起：它是访问微信本地库的原生通道，backend 启动时会连它。
         if (File.Exists(_paths.WechatBrokerExe))
         {
@@ -260,10 +297,23 @@ public sealed class StartupOrchestrator : IDisposable
 
         AddChild(backend);
 
-        await WaitHttpAsync(
-            $"{_paths.WechatUrl}/api/health",
-            TimeSpan.FromSeconds(WechatHealthTimeoutSeconds),
-            cancellationToken).ConfigureAwait(true);
+        try
+        {
+            await WaitHttpAsync(
+                $"{_paths.WechatUrl}/api/health",
+                TimeSpan.FromSeconds(WechatHealthTimeoutSeconds),
+                cancellationToken).ConfigureAwait(true);
+        }
+        catch (InvalidOperationException ex)
+        {
+            // 上游起不来 → 明确告知并继续（不静默降级）。日志里能看到完整原因。
+            _interaction.Report(
+                $"上游实时数据源启动失败（{ex.Message}），已降级为本地解密链路；"
+                + "图片 / 语音 / 视频将不可用。");
+            return false;
+        }
+
+        return true;
     }
 
     /// <summary>等价 build_wechat_env()（L265-L283）。</summary>

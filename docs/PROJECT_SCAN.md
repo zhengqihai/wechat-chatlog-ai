@@ -1,5 +1,12 @@
 # Chatlog AI 便携统一版 — 项目扫描档案
 
+> ⚠️ **部分内容已作废（2026-09-30，阶段 D3）**：本文档第 3 / 4 节里关于
+> **上游微信解析服务（`runtime/wechat`、`wechat-backend.exe`、10392 端口、broker、授权页、
+> `.bat` 启动入口）**的描述**不再反映现状**。自研读取链路（`docs/SELFHOST_DATA_PLAN.md` §4 阶段 C）
+> 已接管会话/消息、通讯录+头像、朋友圈时间线+用户、朋友圈导出；`runtime/wechat` 已被移除，
+> 启动编排改由 .NET 客户端（`StartupOrchestrator`）承担，且上游已是**可选**的。
+> 该改造的完整口径与验收证据，以 `docs/SELFHOST_DATA_PLAN.md` 为准。
+
 > 用途：本文件是项目的「静态快照」。新开对话窗口（上下文已满载）时，**先读本文件即可免去重新扫描**。
 > 本文件只描述现状与机制，不含改造方案。接口细节见 `docs/API_REFERENCE.md`。
 >

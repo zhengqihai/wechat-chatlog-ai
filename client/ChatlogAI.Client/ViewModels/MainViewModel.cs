@@ -942,7 +942,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         _rawMessages = [.. data.Messages];
         ApplyFilters();
-        SourceStatus = "微信 实时数据源已连接";
+        // 只标记"数据源可用"，**不要**在这里写 SourceStatus：真实来源文案由 LoadChatsAsync
+        // 从 status_info.msg 取（本地链路是"本地解密库已连接"，上游是"微信实时数据库已连接"）。
+        // 此前这里无条件写成"微信 实时数据源已连接"，把"读的是解密库快照 / 旧镜像"这类降级
+        // 也伪装成实时——正是它让上一轮排查时"左栏实时、消息却是旧日期"的线索误导了方向。
         IsSourceReady = true;
     }
 

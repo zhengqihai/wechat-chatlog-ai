@@ -81,8 +81,16 @@ public sealed class AppPaths
 
     public string WechatOutputDir => Path.Combine(DataFilesDir, "wechat", "output");
 
-    /// <summary>微信账号密钥文件；db_key 非空即视为已完成授权。</summary>
+    /// <summary>上游产出的账号密钥文件；db_key 非空即视为已完成授权。</summary>
     public string WechatAccountKeysFile => Path.Combine(WechatOutputDir, "account_keys.json");
+
+    /// <summary>
+    /// 本服务自己的密钥备份（= 后端 <c>localdb/keys.py</c> 的首选来源）。
+    ///
+    /// 与上游那份的**结构不同**（这份是 `{accounts: [{account, db_key, …}]}`），
+    /// 且它是上游被移除后**唯一**的密钥来源 —— 也是「微信账号」窗口里手动导入密钥的落点。
+    /// </summary>
+    public string LocalKeysFile => Path.Combine(ConfigDir, "wechat-keys.json");
 
     // ---------- 微信上游运行时（只读） ----------
 

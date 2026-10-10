@@ -307,3 +307,5 @@ D:\code\chatlog-ai-portable\client\ChatlogAI.Client\obj\Release\net8.0-windows\w
 D:\code\chatlog-ai-portable\client\ChatlogAI.Client\obj\Release\net8.0-windows\win-x64\Views\ScheduledSendWindow.g.cs
 D:\code\chatlog-ai-portable\client\ChatlogAI.Client\obj\Release\net8.0-windows\win-x64\GeneratedInternalTypeHelper.g.cs
 D:\code\chatlog-ai-portable\client\ChatlogAI.Client\obj\Release\net8.0-windows\win-x64\ChatlogAI_MarkupCompile.lref
+D:\code\chatlog-ai-portable\client\ChatlogAI.Client\obj\Release\net8.0-windows\win-x64\Views\AboutWindow.baml
+D:\code\chatlog-ai-portable\client\ChatlogAI.Client\obj\Release\net8.0-windows\win-x64\Views\AboutWindow.g.cs

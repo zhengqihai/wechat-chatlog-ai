@@ -16,6 +16,11 @@ DEFAULT_CONFIG = {
     "wechat_api": "http://127.0.0.1:10392",
     "wechat_account": "",
     "active_provider": "",
+    # 数据来源：local（自研本地解密链路）/ upstream（上游 HTTP）。
+    # **默认 local**（阶段 D2）：C1–C5 已覆盖会话/消息、通讯录+头像、朋友圈时间线+用户、朋友圈导出；
+    # 仍走上游的只剩「媒体本体（图片/语音/视频）」与账号枚举（阻塞于 C6，见 SELFHOST_DATA_PLAN.md）。
+    # 本地链路未就绪时 `get_source()` 会自动回退上游，原因经 /api/data-source/status 暴露。
+    "data_source": "local",
 }
 
 # config/api-keys.json 的默认内容。

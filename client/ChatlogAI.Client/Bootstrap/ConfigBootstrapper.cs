@@ -29,6 +29,10 @@ public sealed class ConfigBootstrapper
         ["wechat_api"] = $"http://127.0.0.1:{AppPaths.WechatPort}",
         ["wechat_account"] = "",
         ["active_provider"] = "",
+        // 数据来源：local（自研本地解密链路）/ upstream（上游 HTTP）。默认 local —— 自研链路
+        // 已覆盖会话/消息、通讯录+头像、朋友圈时间线+用户、朋友圈导出；未就绪时后端会自动回退上游。
+        // 与 app/config_defaults.py 的 DEFAULT_CONFIG 必须保持一致。
+        ["data_source"] = "local",
     };
 
     /// <summary>config/api-keys.json 的默认内容（对应 DEFAULT_API_KEYS）。</summary>
@@ -93,13 +97,19 @@ public sealed class ConfigBootstrapper
         }
     }
 
-    /// <summary>等价 require_paths()：缺少运行文件时抛出可读异常，不做静默降级。</summary>
+    /// <summary>
+    /// 校验**我们自己**的运行文件是否齐全（等价 require_paths()：缺少时抛出可读异常，不做静默降级）。
+    ///
+    /// 刻意**不含**上游的 `wechat-backend.exe` 与 `resources\ui`（阶段 D3）：
+    /// 自研链路 C1–C5 已接管会话/消息、通讯录+头像、朋友圈时间线+用户、朋友圈导出，
+    /// 上游只剩「媒体本体」与账号枚举，且它当前拿不到 lease。
+    /// 把上游列进必需项，会让"删掉上游"直接变成"程序起不来"——
+    /// 这正是 §6 里"移除前必须先拆依赖"要防的事。
+    /// </summary>
     public void RequirePaths()
     {
         var required = new[]
         {
-            _paths.WechatBackendExe,
-            _paths.WechatUiDir,
             _paths.PythonExe,
             _paths.ServerScript,
             _paths.ConfigFile,

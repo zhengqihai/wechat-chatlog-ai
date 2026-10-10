@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("Chatlog AI")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+2841717fda22aa8c48964fff460e39c0b87596b8")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+a4db13f8cf6b343f84aebb67f3903548da66726f")]
 [assembly: System.Reflection.AssemblyProductAttribute("Chatlog AI")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Chatlog AI")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

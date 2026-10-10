@@ -26,7 +26,13 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <StackPanel Grid.Row="0" Margin="20,20,20,0">
+        <!-- 外层加滚动条：阶段 D3 起这里多了一块「数据库密钥」区，窗口是
+             SizeToContent="Height" + MaxHeight=760，内容超高时必须能滚，否则底部会被直接裁掉。 -->
+        <ScrollViewer Grid.Row="0"
+                      Margin="20,20,20,0"
+                      HorizontalScrollBarVisibility="Disabled"
+                      VerticalScrollBarVisibility="Auto">
+        <StackPanel>
             <!-- ==================== 待确认区（置顶） ==================== -->
             <Border Padding="14,12"
                     Margin="0,0,0,16"
@@ -176,7 +182,101 @@
                            TextWrapping="Wrap"
                            Foreground="{DynamicResource TextSecondaryBrush}" />
             </Border>
+
+            <!-- ==================== 数据库密钥（阶段 D3） ====================
+                 上游的授权页是唯一能"解析出 db_key"的东西，而它已被移除。
+                 这一区**不依赖上游**：账号列表会因为上游没了而整片 503，
+                 但密钥状态与导入打的是本地后端 —— 它就是把唯一的补救入口留在用户手上。 -->
+            <TextBlock Text="微信数据库密钥"
+                       Margin="0,18,0,0"
+                       FontSize="13"
+                       FontWeight="SemiBold"
+                       Foreground="{DynamicResource TextSecondaryBrush}" />
+
+            <!-- 摘要：几条、几条**实测**可用、本地链路有没有起来（后两者要分开说，
+                 否则用户会对着"密钥明明在"反复重导密钥）。 -->
+            <TextBlock Text="{Binding KeySummary}"
+                       Margin="0,8,0,0"
+                       FontSize="12"
+                       TextWrapping="Wrap"
+                       Foreground="{DynamicResource TextSecondaryBrush}" />
+
+            <TextBlock Text="{Binding KeyFilesText}"
+                       Margin="0,6,0,0"
+                       FontSize="11"
+                       TextWrapping="Wrap"
+                       Foreground="{DynamicResource TextMutedBrush}" />
+
+            <ItemsControl ItemsSource="{Binding Keys}" Margin="0,8,0,0">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Border Margin="0,0,0,6"
+                                Padding="10,8"
+                                CornerRadius="4"
+                                Background="{DynamicResource PanelBrush}">
+                            <StackPanel>
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="{Binding DisplayName}"
+                                               FontSize="12"
+                                               TextTrimming="CharacterEllipsis"
+                                               Foreground="{DynamicResource TextPrimaryBrush}" />
+                                    <TextBlock Margin="8,0,0,0"
+                                               FontSize="11"
+                                               Foreground="{DynamicResource TextSecondaryBrush}">
+                                        <Run Text="{Binding VerifiedBadge, Mode=OneWay}" />
+                                        <Run Text=" · " />
+                                        <Run Text="{Binding SourceText, Mode=OneWay}" />
+                                    </TextBlock>
+                                </StackPanel>
+                                <TextBlock Text="{Binding Message}"
+                                           Margin="0,3,0,0"
+                                           FontSize="11"
+                                           TextWrapping="Wrap"
+                                           Foreground="{DynamicResource TextMutedBrush}" />
+                            </StackPanel>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <TextBlock Text="{Binding KeyMessage}"
+                       Margin="0,6,0,0"
+                       FontSize="12"
+                       TextWrapping="Wrap"
+                       Foreground="{DynamicResource AccentTextBrush}"
+                       Visibility="{Binding HasKeyMessage, Converter={StaticResource BoolToVis}}" />
+
+            <TextBox Text="{Binding KeyInput, UpdateSourceTrigger=PropertyChanged}"
+                     Margin="0,8,0,0"
+                     Height="64"
+                     AcceptsReturn="True"
+                     TextWrapping="Wrap"
+                     VerticalScrollBarVisibility="Auto"
+                     FontFamily="Consolas, Microsoft YaHei UI"
+                     FontSize="12" />
+
+            <TextBlock Text="粘贴「密钥文件全文」，或 64 位 hex 的 db_key（后者还需填下面的数据库目录）。导入时后端会当场解密校验，不通过不会写入。"
+                       Margin="0,4,0,0"
+                       FontSize="11"
+                       TextWrapping="Wrap"
+                       Foreground="{DynamicResource TextMutedBrush}" />
+
+            <TextBox Text="{Binding KeyStoragePath, UpdateSourceTrigger=PropertyChanged}"
+                     Margin="0,6,0,0"
+                     FontSize="12"
+                     ToolTip="只粘贴裸 db_key 时必填，例如 D:\app\wechat\Files\xwechat_files\wxid_xxx_0000\db_storage" />
+
+            <Button Content="导入并校验"
+                    Margin="0,8,0,0"
+                    HorizontalAlignment="Left"
+                    Padding="12,4"
+                    FontSize="12"
+                    Style="{StaticResource PrimaryButton}"
+                    IsEnabled="{Binding CanImportKey}"
+                    Command="{Binding ImportKeyCommand}"
+                    ToolTip="后端会当场解密本机 session.db 第 1 页来验证密钥，通过才写入" />
         </StackPanel>
+        </ScrollViewer>
 
         <Border Grid.Row="1"
                 Margin="0,20,0,0"

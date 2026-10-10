@@ -132,3 +132,109 @@ public sealed record AccountRequest
 {
     [JsonPropertyName("account")] public string Account { get; init; } = "";
 }
+
+// ==================== 数据库密钥手动导入（阶段 D3） ====================
+//
+// 上游的授权页（10392）是唯一能"解析出 db_key"的东西，而它已被移除。
+// 此后 `config/wechat-keys.json` 是唯一的密钥来源，所以必须有一个"用户把密钥交给程序"的入口。
+// 字段逐字对齐 app/server.py 的 /api/keys/* 两个端点。
+
+/// <summary>
+/// 一把候选密钥的现状。
+/// <see cref="Verified"/> 是后端**真的解开了本机 session.db 第 1 页**的结果，
+/// 不是格式检查 —— 只看格式的话，一把合法但错误的密钥会让界面显示"已就绪"而链路全 503。
+/// </summary>
+public sealed record KeyEntryInfo
+{
+    [JsonPropertyName("account")] public string Account { get; init; } = "";
+
+    /// <summary>来源：<c>local-backup</c>（config/wechat-keys.json）/ <c>upstream</c>（上游产物）/ <c>import</c>。</summary>
+    [JsonPropertyName("source")] public string Source { get; init; } = "";
+
+    [JsonPropertyName("dbStoragePath")] public string DbStoragePath { get; init; } = "";
+
+    [JsonPropertyName("keyHexLength")] public int KeyHexLength { get; init; }
+
+    [JsonPropertyName("verified")] public bool Verified { get; init; }
+
+    /// <summary>后端给的一句话（成功原因或失败原因），直接显示。</summary>
+    [JsonPropertyName("message")] public string Message { get; init; } = "";
+
+    [JsonIgnore] public string DisplayName => string.IsNullOrWhiteSpace(Account) ? "（未识别账号）" : Account;
+
+    [JsonIgnore] public string VerifiedBadge => Verified ? "可用" : "不可用";
+
+    /// <summary>来源的可读文案。认不出的取值原样显示，不编造。</summary>
+    [JsonIgnore] public string SourceText => Source switch
+    {
+        "local-backup" => "本机备份（config/wechat-keys.json）",
+        "upstream" => "上游产物（account_keys.json）",
+        "import" => "手动导入",
+        _ => Source,
+    };
+}
+
+/// <summary>密钥可以来自哪些文件（界面要把路径展示给用户，让他知道去哪里拿）。</summary>
+public sealed record KeySources
+{
+    [JsonPropertyName("localKeysFile")] public string LocalKeysFile { get; init; } = "";
+
+    [JsonPropertyName("localKeysFileExists")] public bool LocalKeysFileExists { get; init; }
+
+    [JsonPropertyName("upstreamKeysFile")] public string UpstreamKeysFile { get; init; } = "";
+
+    [JsonPropertyName("upstreamKeysFileExists")] public bool UpstreamKeysFileExists { get; init; }
+}
+
+/// <summary>GET /api/keys/status 响应。</summary>
+public sealed record KeyStatusResponse
+{
+    [JsonPropertyName("status")] public string? Status { get; init; }
+
+    [JsonPropertyName("localdbAvailable")] public bool LocaldbAvailable { get; init; }
+
+    [JsonPropertyName("keys")] public IReadOnlyList<KeyEntryInfo> Keys { get; init; } = [];
+
+    [JsonPropertyName("activeAccount")] public string ActiveAccount { get; init; } = "";
+
+    [JsonPropertyName("usableCount")] public int UsableCount { get; init; }
+
+    /// <summary>一条密钥都没有时的原因文案；有内容就说明"为什么没得用"。</summary>
+    [JsonPropertyName("missingReason")] public string MissingReason { get; init; } = "";
+
+    [JsonPropertyName("sources")] public KeySources? Sources { get; init; }
+
+    /// <summary>本地链路的初始化错误（有值就说明"密钥在但链路没起来"）。</summary>
+    [JsonPropertyName("initError")] public string InitError { get; init; } = "";
+
+    /// <summary>自研链路完全不可用时的说明。</summary>
+    [JsonPropertyName("detail")] public string Detail { get; init; } = "";
+}
+
+/// <summary>POST /api/keys/import 请求体。</summary>
+public sealed record KeyImportRequest
+{
+    /// <summary>粘贴内容：密钥文件全文，或 64 位 hex 的裸 db_key。</summary>
+    [JsonPropertyName("content")] public string Content { get; init; } = "";
+
+    /// <summary>只粘贴裸 db_key 时用于推断账号；留空则由后端从库目录名推断。</summary>
+    [JsonPropertyName("account")] public string? Account { get; init; }
+
+    /// <summary>只粘贴裸 db_key 时**必填**：数据库目录（…\db_storage）。</summary>
+    [JsonPropertyName("db_storage_path")] public string? DbStoragePath { get; init; }
+}
+
+/// <summary>POST /api/keys/import 响应。</summary>
+public sealed record KeyImportResponse
+{
+    [JsonPropertyName("status")] public string? Status { get; init; }
+
+    [JsonPropertyName("savedTo")] public string SavedTo { get; init; } = "";
+
+    [JsonPropertyName("imported")] public IReadOnlyList<KeyEntryInfo> Imported { get; init; } = [];
+
+    /// <summary>本次未通过实测校验、**没有**写盘的条目。</summary>
+    [JsonPropertyName("rejected")] public IReadOnlyList<KeyEntryInfo> Rejected { get; init; } = [];
+
+    [JsonPropertyName("message")] public string Message { get; init; } = "";
+}

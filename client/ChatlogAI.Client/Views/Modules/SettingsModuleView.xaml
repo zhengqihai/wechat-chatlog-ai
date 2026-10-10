@@ -124,11 +124,33 @@
                            Foreground="{DynamicResource TextMutedBrush}" />
             </Grid>
 
+            <!-- 关于：与免责声明同为"纯告知"，都是设置里一行 + 一个只读弹窗。 -->
+            <Grid Margin="0,14,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <Button Grid.Column="0"
+                        Content="关于"
+                        Width="96"
+                        Padding="0,4"
+                        Click="OnShowAboutClick" />
+
+                <TextBlock Grid.Column="1"
+                           Margin="12,0,0,0"
+                           VerticalAlignment="Center"
+                           Text="程序名称与版本"
+                           FontSize="12"
+                           TextWrapping="Wrap"
+                           Foreground="{DynamicResource TextMutedBrush}" />
+            </Grid>
+
             <Border Height="1"
                     Margin="0,20,0,0"
                     Background="{DynamicResource LineBrush}" />
 
-            <TextBlock Text="建设中：快捷键、关于"
+            <TextBlock Text="建设中：快捷键"
                        Margin="0,14,0,0"
                        FontSize="12"
                        TextWrapping="Wrap"

@@ -52,3 +52,5 @@ D:\code\chatlog-ai-portable\client\ChatlogAI.Client\obj\Debug\net8.0-windows\Vie
 D:\code\chatlog-ai-portable\client\ChatlogAI.Client\obj\Debug\net8.0-windows\Themes\Theme.baml
 d:\code\chatlog-ai-portable\client\ChatlogAI.Client\obj\Debug\net8.0-windows\Views\AccountWindow.baml
 d:\code\chatlog-ai-portable\client\ChatlogAI.Client\obj\Debug\net8.0-windows\Views\AccountWindow.g.cs
+d:\code\chatlog-ai-portable\client\ChatlogAI.Client\obj\Debug\net8.0-windows\Views\AboutWindow.baml
+d:\code\chatlog-ai-portable\client\ChatlogAI.Client\obj\Debug\net8.0-windows\Views\AboutWindow.g.cs

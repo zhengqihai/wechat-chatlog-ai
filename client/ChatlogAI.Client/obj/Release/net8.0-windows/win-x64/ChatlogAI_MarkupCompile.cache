@@ -10,11 +10,11 @@ none
 false
 TRACE;RELEASE;NET;NET8_0;NETCOREAPP
 D:\code\chatlog-ai-portable\client\ChatlogAI.Client\App.xaml
-17778700769
+181898705034
 
-64376016178
+65-160654607
 199-1879227711
-Themes\Theme.Dark.xaml;Themes\Theme.Light.xaml;Themes\Theme.xaml;Views\AccountWindow.xaml;Views\AutoReplyWindow.xaml;Views\DisclaimerWindow.xaml;Views\ExportWindow.xaml;Views\MainWindow.xaml;Views\ModelSettingsWindow.xaml;Views\Modules\ChatModuleView.xaml;Views\Modules\ContactsModuleView.xaml;Views\Modules\MomentsModuleView.xaml;Views\Modules\ScheduledSendModuleView.xaml;Views\Modules\SettingsModuleView.xaml;Views\MomentsExportWindow.xaml;Views\ScheduledSendWindow.xaml;Views\StartupWindow.xaml;
+Themes\Theme.Dark.xaml;Themes\Theme.Light.xaml;Themes\Theme.xaml;Views\AboutWindow.xaml;Views\AccountWindow.xaml;Views\AutoReplyWindow.xaml;Views\DisclaimerWindow.xaml;Views\ExportWindow.xaml;Views\MainWindow.xaml;Views\ModelSettingsWindow.xaml;Views\Modules\ChatModuleView.xaml;Views\Modules\ContactsModuleView.xaml;Views\Modules\MomentsModuleView.xaml;Views\Modules\ScheduledSendModuleView.xaml;Views\Modules\SettingsModuleView.xaml;Views\MomentsExportWindow.xaml;Views\ScheduledSendWindow.xaml;Views\StartupWindow.xaml;
 
 False
 

@@ -3,6 +3,10 @@
 .SYNOPSIS
     把 Chatlog AI 客户端打包成可直接分发的安装包（client\build\dist\ChatlogAI-Setup-x.y.z.exe）。
 
+    ⚠️ 本文件**必须**保存为 UTF-8 **with BOM**。PowerShell 5.1 在无 BOM 时按系统代码页（中文版是 GBK）
+       解析脚本，中文注释会变成乱码并连带把引号、括号吃掉，报出一堆"Unexpected token"。
+       任何编辑器/工具改完本文件后，请确认开头三字节仍是 EF BB BF（与 installer\ChatlogAI.iss 同一要求）。
+
 .DESCRIPTION
     每次代码更新后重跑本脚本即可：产物会覆盖上一次的结果，收到旧包的人直接装新包就能升级
     （覆盖安装不会动他的 ProgramData 配置，也不会要求先卸载）。
@@ -32,6 +36,9 @@
 [CmdletBinding()]
 param(
     [string]$Version,
+    [switch]$Bump,
+    [ValidateSet('major', 'minor', 'patch')]
+    [string]$BumpPart = 'patch',
     [switch]$SkipPublish,
     [switch]$SkipInstaller
 )
@@ -57,6 +64,8 @@ $IssFile      = Join-Path $ClientDir 'installer\ChatlogAI.iss'
 $BuildDir     = Join-Path $ClientDir 'build'
 $StageDir     = Join-Path $BuildDir 'stage'
 $DistDir      = Join-Path $BuildDir 'dist'
+
+$VersionFile  = Join-Path $ClientDir 'VERSION'
 
 $AppSource     = Join-Path $RepoRoot 'app'
 $RuntimeSource = Join-Path $RepoRoot 'runtime'
@@ -271,18 +280,58 @@ function Get-IsccVersion([string]$IsccPath) {
 # ============================================================================
 # 版本号
 # ============================================================================
+# 从纯文本文件读取版本号：只取第一行非空内容，容忍 BOM 与空白。
+function Read-VersionFromFile([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+    try {
+        $raw = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
+    } catch {
+        return $null
+    }
+    if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
+    $raw = $raw.TrimStart([char]0xFEFF)
+    $line = @($raw -split "`r?`n" | ForEach-Object { $_.Trim() } |
+            Where-Object { $_ } | Select-Object -First 1)
+    if (-not $line) { return $null }
+    return $line
+}
+
+function Get-BaseVersion {
+    # 1. client\VERSION（最常用的手改入口）
+    $fromFile = Read-VersionFromFile $VersionFile
+    if ($fromFile) { return $fromFile }
+
+    # 2. csproj 的 <Version>（回退，兼容老流程）
+    $xml = [xml](Get-Content -LiteralPath $ProjectFile -Raw)
+    $declared = @($xml.Project.PropertyGroup | ForEach-Object { $_.Version } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) | Select-Object -First 1
+    if ($declared) { return $declared.Trim() }
+
+    return '2.0.0'
+}
+
 function Get-AppVersion {
+    # 命令行 -Version 依然最高优先级，便于临时试打一个别的版本号。
     if (-not [string]::IsNullOrWhiteSpace($Version)) {
         return $Version.Trim()
     }
+    return Get-BaseVersion
+}
 
-    $xml = [xml](Get-Content -LiteralPath $ProjectFile -Raw)
-    $declared = @($xml.Project.PropertyGroup | ForEach-Object { $_.Version } |
-        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) | Select-Object -First 1
-    if (-not $declared) {
-        return '2.0.0'
+# 自动递增：把 2.0.1 → 2.0.2 / 2.1.0 / 3.0.0。只处理前 3 段数字，
+# 保留不了的预发布后缀（如 -beta）会被丢弃，因为安装包 VersionInfo 本来就是纯数字。
+function Get-NextVersion([string]$Current, [string]$Part) {
+    $segments = @($Current -split '[.\-+]' | Where-Object { $_ -match '^\d+$' } | Select-Object -First 3)
+    $nums = @()
+    foreach ($s in $segments) { $nums += [int]$s }
+    while ($nums.Count -lt 3) { $nums += 0 }
+
+    switch ($Part) {
+        'major' { $nums[0]++; $nums[1] = 0; $nums[2] = 0 }
+        'minor' { $nums[1]++; $nums[2] = 0 }
+        default { $nums[2]++ }
     }
-    return $declared.Trim()
+    return ($nums -join '.')
 }
 
 # 安装包的 VersionInfoVersion 只接受 X.X.X.X 纯数字形式。
@@ -411,15 +460,19 @@ Write-Detail '通过：未检出 api-key、聊天数据、日志、导出文件�
 
 # ---------- 运行文件完整性 ----------
 Write-Step '校验运行文件完整性'
-# 与 Bootstrap\ConfigBootstrapper.RequirePaths() 的必需项对齐。
+# 与 Bootstrap\ConfigBootstrapper.RequirePaths() 的必需项**逐项对齐**（两边改动必须同步）。
 # config.json 不在其列：它由程序首次运行时在 %ProgramData%\ChatlogAI 下生成。
+#
+# 阶段 D3 起**上游已从包里移除**（runtime\wechat，299MB），所以这里也不再要求
+# wechat-backend.exe / resources\ui —— 自研链路 C1–C5 已接管会话/消息、通讯录+头像、
+# 朋友圈时间线+用户、朋友圈导出，上游只剩「媒体本体」与账号枚举。C# 侧同样已去掉这两项。
 $requiredPaths = @(
     (Join-Path $StageDir 'ChatlogAI.exe'),
     (Join-Path $StageDir 'app\server.py'),
+    (Join-Path $StageDir 'app\localdb\service.py'),
     (Join-Path $StageDir 'runtime\python\python.exe'),
     (Join-Path $StageDir 'runtime\python-packages'),
-    (Join-Path $StageDir 'runtime\wechat\resources\backend\wechat-backend.exe'),
-    (Join-Path $StageDir 'runtime\wechat\resources\ui')
+    (Join-Path $StageDir 'runtime\python-packages\zstandard')
 )
 $missing = @($requiredPaths | Where-Object { -not (Test-Path -LiteralPath $_) })
 if ($missing.Count -gt 0) {

@@ -332,6 +332,26 @@ public sealed class ChatlogApiClient : IDisposable
         => SendAsync<AccountConfirmResponse>(
             HttpMethod.Post, "/api/wechat/account/confirm", null, DefaultTimeout, cancellationToken);
 
+    // ==================== 9.2 数据库密钥（阶段 D3：手动导入） ====================
+
+    /// <summary>
+    /// GET /api/keys/status：密钥现状。每一条都带后端**实测**（解开本机 session.db 第 1 页）的结果，
+    /// 不是格式检查 —— 所以这个调用会比其他 GET 慢几十毫秒（PBKDF2 256000 次），属预期。
+    /// </summary>
+    public Task<KeyStatusResponse> GetKeysStatusAsync(CancellationToken cancellationToken = default)
+        => SendAsync<KeyStatusResponse>(
+            HttpMethod.Get, "/api/keys/status", null, DefaultTimeout, cancellationToken);
+
+    /// <summary>
+    /// POST /api/keys/import：导入密钥（密钥文件全文，或 64 位 hex 的裸 db_key）。
+    /// 后端逐条实测校验，未通过的**不写盘**并在响应里列出原因；全部未通过时返回 400。
+    /// </summary>
+    public Task<KeyImportResponse> ImportKeyAsync(
+        KeyImportRequest request,
+        CancellationToken cancellationToken = default)
+        => SendAsync<KeyImportResponse>(
+            HttpMethod.Post, "/api/keys/import", request, DefaultTimeout, cancellationToken);
+
     // ==================== 8. 通讯录 ====================
 
     /// <summary>

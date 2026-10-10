@@ -30,6 +30,17 @@ try:
 except Exception:
     AUTOMATION_AVAILABLE = False
 
+# 自研本地数据链路（阶段 C）。用 try 包住的原因与 automation 一样：
+# 它是可选能力，坏掉时服务必须能继续用上游跑，而不是整个 FastAPI 起不来。
+try:
+    from localdb import keys as localdb_keys
+    from localdb import service as localdb_service
+    LOCALDB_AVAILABLE = True
+except Exception:
+    localdb_keys = None
+    localdb_service = None
+    LOCALDB_AVAILABLE = False
+
 BASE_DIR = Path(__file__).parent.resolve()
 ROOT_DIR = Path(os.environ.get("CHATLOG_ROOT_DIR") or BASE_DIR.parent).resolve()
 # 可写数据根目录：正式安装版由 .NET 客户端指向 ProgramData（程序目录只读，不可写）；
@@ -67,11 +78,15 @@ def load_config() -> dict:
     default_config = dict(DEFAULT_CONFIG)
     if CONFIG_FILE.exists():
         try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            # 必须用 utf-8-sig：记事本等编辑器写出的 UTF-8 会带 BOM，
+            # 用 "utf-8" 读取时 json 解析会失败，而下面的 except 会把**整份配置**
+            # （端口 / 上游地址 / 账号 / data_source）静默换成默认值 —— 排查方向会被彻底带偏。
+            with open(CONFIG_FILE, "r", encoding="utf-8-sig") as f:
                 data = json.load(f)
                 default_config.update(data)
-        except Exception:
-            pass
+        except Exception as exc:
+            # 不再静默吞掉：配置读坏必须在控制台看得见。
+            print("[config] 读取 %s 失败，本次使用默认配置：%s" % (CONFIG_FILE, exc))
     return default_config
 
 
@@ -471,8 +486,6 @@ class AutoReplyEngine:
     def __init__(self):
         self._thread = None
         self._stop_event = threading.Event()
-        self._adapter = None
-        self._adapter_key = None
         self._baselined = set()
         self._signatures = {}
         self._fingerprints = {}
@@ -489,13 +502,13 @@ class AutoReplyEngine:
             "message": message,
         })
 
-    def _get_adapter(self) -> WeChatAdapter:
-        config = load_config()
-        key = (config.get("wechat_api", ""), config.get("wechat_account", ""))
-        if self._adapter is None or self._adapter_key != key:
-            self._adapter = WeChatAdapter(*key)
-            self._adapter_key = key
-        return self._adapter
+    def _get_adapter(self):
+        """会话/消息的数据来源（upstream 或 local，见 `get_chat_source`）。
+
+        这里不再自己缓存：缓存职责已收敛到 `get_chat_source()` 一处。
+        两处各存一份必然出现"清了一个忘了另一个"（这正是原来 reset_adapter 存在的原因）。
+        """
+        return get_source("chat")
 
     def is_running(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
@@ -519,11 +532,6 @@ class AutoReplyEngine:
         self._fingerprints = {}
         self._last_reply_at = {}
         self.active_chat_name = None
-
-    def reset_adapter(self) -> None:
-        """账号切换后必须调用：旧的 adapter 带着旧账号的 session 与 base_url。"""
-        self._adapter = None
-        self._adapter_key = None
 
     def start(self) -> None:
         if self.is_running():
@@ -862,7 +870,7 @@ def _scheduled_generate(task: Dict) -> str:
     target_id = str(task.get("target_id") or "").strip()
     target_name = task.get("target_name") or target_id
     context_count = _clamp_int(task.get("context_count"), 1, 2000, 80)
-    messages = get_wechat_adapter().list_messages(target_id, limit=context_count)
+    messages = get_source("chat").list_messages(target_id, limit=context_count)
     return generate_greeting_text(target_name, messages, context_count, task.get("prompt") or "")
 
 
@@ -1094,7 +1102,7 @@ _WECHAT_ADAPTER_KEY = None
 # ==================== 数据源状态与消息窗口 ====================
 
 def get_wechat_adapter() -> WeChatAdapter:
-    """按当前配置复用微信本地 API 会话。"""
+    """按当前配置复用微信本地 API 会话（**上游**数据源）。"""
     global _WECHAT_ADAPTER, _WECHAT_ADAPTER_KEY
     config = load_config()
     key = (config.get("wechat_api", ""), config.get("wechat_account", ""))
@@ -1104,16 +1112,74 @@ def get_wechat_adapter() -> WeChatAdapter:
     return _WECHAT_ADAPTER
 
 
-def _reset_wechat_adapters() -> None:
-    """清掉**两处** adapter 缓存：模块级的 `_WECHAT_ADAPTER` 与 `AutoReplyEngine._adapter`。
+# ---------- 数据源切换（阶段 D1）----------
+#
+# 自研实现已覆盖：会话 / 消息（C1/C2）、通讯录 + 头像（C3）、朋友圈时间线 + 用户（C4）、
+# 朋友圈导出（C5）。**仍走上游的只剩「媒体（图片/语音/视频本体）」与账号枚举**：
+# 前者阻塞于 C6（`.dat` 命名键与加密算法未破），后者是上游自己的账号清单。
+# 因此这里做的是**能力级路由**，而不是把上游整个换掉。
 
-    两处的缓存键都是 `(wechat_api, wechat_account)`，key 变了本来也会重建；显式清一次是为了
+_LOCAL_SERVICE = None
+_LOCAL_SERVICE_KEY = None
+
+
+def data_source_mode() -> str:
+    """`config.json` 的 `data_source`：`upstream`（默认）/ `local`。"""
+    return str(load_config().get("data_source") or "upstream").strip().lower()
+
+
+def get_local_service():
+    """取本地数据服务（按账号缓存）。不可用时返回 None —— **不抛**。"""
+    global _LOCAL_SERVICE, _LOCAL_SERVICE_KEY
+    if not LOCALDB_AVAILABLE:
+        return None
+    config = load_config()
+    key = str(config.get("wechat_account") or "")
+    if _LOCAL_SERVICE is None or _LOCAL_SERVICE_KEY != key:
+        if _LOCAL_SERVICE is not None:
+            _LOCAL_SERVICE.stop()
+        _LOCAL_SERVICE = localdb_service.LocalDataService(CONFIG_DIR, DATA_ROOT, key)
+        _LOCAL_SERVICE_KEY = key
+    _LOCAL_SERVICE.start()
+    return _LOCAL_SERVICE
+
+
+# 本地链路**已实现**的能力（阶段 C 逐个补齐）。不在表里的能力恒走上游 ——
+# 这是"能力级路由"的全部依据：没实现的能力不可能被误切到本地。
+LOCAL_CAPABILITIES = {
+    "chat": ("list_chats", "list_messages"),              # C1 / C2
+    "contacts": ("list_contacts", "fetch_avatar"),        # C3
+    "sns": ("sns_timeline", "sns_users", "sns_sync_latest"),  # C4（媒体仍走上游，见 C6）
+    "export": ("sns_export_create", "sns_export_status", "sns_export_download"),  # C5
+}
+
+
+def get_source(capability: str):
+    """按能力取数据源。`WeChatAdapter` 与 `LocalDataService` 同名同形，可直接互换。
+
+    `local` 模式下若该能力未实现、或本地链路没就绪（无密钥 / 镜像失败），**回退上游**，
+    原因通过 `/api/data-source/status` 暴露 —— 绝不静默降级，也不让接口 500。
+    """
+    if capability in LOCAL_CAPABILITIES and data_source_mode() == "local":
+        service = get_local_service()
+        if service is not None and service.ready:
+            return service
+    return get_wechat_adapter()
+
+
+def _reset_wechat_adapters() -> None:
+    """清掉全部数据源缓存：模块级上游适配器、自动回复引擎的引用、本地服务。
+
+    缓存键都是 `(wechat_api, wechat_account)`，key 变了本来也会重建；显式清一次是为了
     不让"下一个调用方一定会读到新配置"成为隐含前提（切换的后续步骤/落盘都可能失败）。
     """
-    global _WECHAT_ADAPTER, _WECHAT_ADAPTER_KEY
+    global _WECHAT_ADAPTER, _WECHAT_ADAPTER_KEY, _LOCAL_SERVICE, _LOCAL_SERVICE_KEY
     _WECHAT_ADAPTER = None
     _WECHAT_ADAPTER_KEY = None
-    _auto_reply_engine.reset_adapter()
+    if _LOCAL_SERVICE is not None:
+        _LOCAL_SERVICE.stop()
+    _LOCAL_SERVICE = None
+    _LOCAL_SERVICE_KEY = None
 
 
 def _fetch_upstream_accounts() -> Dict:
@@ -1190,12 +1256,12 @@ def filter_messages(messages: List[Dict], recent_hours: Optional[float] = None,
 
 
 def get_real_wechat_chats() -> Dict:
-    result = get_wechat_adapter().list_chats()
+    result = get_source("chat").list_chats()
     return {"status_info": result["status_info"], "chats": result["chats"]}
 
 
 def get_real_wechat_messages(target_id: str, limit: int = 50) -> List[Dict]:
-    return get_wechat_adapter().list_messages(target_id, limit)
+    return get_source("chat").list_messages(target_id, limit)
 
 
 # 只放行图片：本轮修复范围就是图片，其余媒体类型（表情/视频/语音/文件）不在内。
@@ -1413,6 +1479,155 @@ async def get_messages_api(
         raise HTTPException(status_code=503, detail=str(e))
 
 
+@app.get("/api/data-source/status")
+async def data_source_status_api():
+    """数据源状态：当前模式、本地链路是否就绪、降级原因、最近一次同步统计。
+
+    这个接口存在的唯一目的就是**不让降级静默发生** ——
+    上游那套"实时通道失败 → 读静态快照 → 照样返回 200"正是最初那次故障最难排查的地方。
+    """
+    config = load_config()
+    mode = data_source_mode()
+    info = {
+        "status": "success",
+        "mode": mode,
+        "localdbAvailable": LOCALDB_AVAILABLE,
+        "account": str(config.get("wechat_account") or ""),
+    }
+    if not LOCALDB_AVAILABLE:
+        info["active"] = "upstream"
+        info["detail"] = "自研数据链路不可用（依赖缺失或导入失败）"
+        return info
+
+    # 上游模式下不去创建服务（避免"看一眼状态就触发一次全量镜像构建"）；
+    # 已经建过的话就把现状报出来。
+    service = _LOCAL_SERVICE if mode != "local" else get_local_service()
+    local = service.status() if service is not None else None
+    info["local"] = local
+    info["active"] = "local" if (mode == "local" and service is not None and service.ready) else "upstream"
+    # 逐能力列出来源：一眼看出哪些已切到本地、哪些还在上游（后者= 阶段 C 还没补的能力）。
+    local_active = info["active"] == "local"
+    info["capabilities"] = {
+        name: ("local" if local_active else "upstream") for name in LOCAL_CAPABILITIES
+    }
+    if mode == "local" and info["active"] != "local":
+        info["fallbackReason"] = (
+            (local or {}).get("initError") or (local or {}).get("syncError") or "本地链路尚未就绪"
+        )
+    return info
+
+
+# ==================== 微信数据库密钥（阶段 D3：手动导入） ====================
+#
+# 为什么需要这一对端点：上游的授权页（10392）是**唯一**能"解析出 db_key"的东西，
+# 而阶段 D3 把上游移除了。此后 `config/wechat-keys.json` 就是唯一的密钥来源，
+# 而它此前是由人手工从上游产物复制过去的 —— 换账号 / 微信升级轮换密钥 /
+# 数据目录被清空，都会让整条自研链路报废且无从补救。
+#
+# 这一对端点**不走能力级路由**：它们做的是"配置密钥"，与 data_source 是 local 还是
+# upstream 无关 —— 密钥是两者共同的前提。
+
+@app.get("/api/keys/status")
+async def keys_status_api():
+    """密钥现状：可以从哪些文件拿、每一把**实测**能不能用、本地链路为什么没起来。
+
+    `verified` 是"真的解开了本机 session.db 第 1 页"，不是格式检查 —— 只看格式的话，
+    一把合法但错误的密钥会让界面显示"已就绪"，而实际链路全 503。
+    """
+    if not LOCALDB_AVAILABLE:
+        return {
+            "status": "success",
+            "localdbAvailable": False,
+            "keys": [],
+            "sources": {},
+            "detail": "自研数据链路不可用（依赖缺失或导入失败）",
+        }
+
+    local_file = localdb_keys.backup_path(str(CONFIG_DIR))
+    upstream_file = localdb_keys.upstream_keys_path(str(DATA_ROOT))
+    keys, missing_reason = localdb_keys.describe_accounts(str(CONFIG_DIR), str(DATA_ROOT))
+
+    service = _LOCAL_SERVICE
+    info = service.status() if service is not None else {}
+    return {
+        "status": "success",
+        "localdbAvailable": True,
+        "keys": keys,
+        "activeAccount": str(load_config().get("wechat_account") or ""),
+        "usableCount": sum(1 for item in keys if item["verified"]),
+        "missingReason": missing_reason,
+        "sources": {
+            "localKeysFile": local_file,
+            "localKeysFileExists": os.path.exists(local_file),
+            "upstreamKeysFile": upstream_file,
+            "upstreamKeysFileExists": os.path.exists(upstream_file),
+        },
+        "initError": (info or {}).get("initError", ""),
+    }
+
+
+@app.post("/api/keys/import")
+async def keys_import_api(data: dict = Body(...)):
+    """导入微信数据库密钥：支持"密钥文件全文"或"裸 db_key"两种粘贴形态。
+
+    **每一条都必须实测解密通过才写盘**。只校验格式就把内容存下来，等于把"导入成功"
+    变成一句谎话 —— 用户会以为修好了，而链路其实还是坏的。
+    一条都没通过时返回 400 且**不写盘**，让"失败"必须被看见。
+    """
+    if not LOCALDB_AVAILABLE:
+        raise HTTPException(status_code=503, detail="自研数据链路不可用（依赖缺失或导入失败）")
+
+    content = data.get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise HTTPException(status_code=400, detail="缺少 content：请粘贴密钥文件全文或 db_key")
+
+    try:
+        entries = localdb_keys.parse_import(
+            content,
+            account=str(data.get("account") or ""),
+            db_storage_path=str(data.get("db_storage_path") or ""),
+        )
+    except localdb_keys.KeyError_ as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    accepted = []
+    rejected = []
+    for entry in entries:
+        entry = localdb_keys.infer_account(entry)
+        ok, message = localdb_keys.verify_entry(entry)
+        record = {
+            "account": entry.get("account") or "",
+            "dbStoragePath": entry.get("db_storage_path") or "",
+            "verified": ok,
+            "message": message,
+        }
+        (accepted if ok else rejected).append((entry, record))
+
+    if not accepted:
+        raise HTTPException(
+            status_code=400,
+            detail="密钥校验未通过，未写入任何内容：" + "；".join(
+                "%s %s" % (record["account"] or "（未识别账号）", record["message"])
+                for _, record in rejected),
+        )
+
+    saved_to = localdb_keys.save_accounts(str(CONFIG_DIR), [entry for entry, _ in accepted])
+    # 让新密钥立刻生效：本地服务是按账号缓存的（`_ensure_store` 只建一次），
+    # 不重置的话要等重启进程才认。
+    _reset_wechat_adapters()
+
+    message = "已导入 %d 条密钥并校验通过" % len(accepted)
+    if rejected:
+        message += "；%d 条未通过已忽略" % len(rejected)
+    return {
+        "status": "success",
+        "savedTo": saved_to,
+        "imported": [record for _, record in accepted],
+        "rejected": [record for _, record in rejected],
+        "message": message,
+    }
+
+
 @app.get("/api/media/image")
 async def get_media_image_api(
     target_id: str,
@@ -1476,7 +1691,7 @@ async def get_contacts_api(
         if value is not None:
             include[name] = value
     try:
-        result = get_wechat_adapter().list_contacts(
+        result = get_source("contacts").list_contacts(
             include=include, keyword=keyword, account=account
         )
     except Exception as e:
@@ -1491,7 +1706,7 @@ async def get_contacts_api(
 async def get_contact_avatar_api(username: str = Query(...)):
     """头像代理：与 /api/media/image 同一模式，只接受 username，不接受任意 URL。"""
     try:
-        content, content_type = get_wechat_adapter().fetch_avatar(username)
+        content, content_type = get_source("contacts").fetch_avatar(username)
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e))
     return Response(
@@ -1511,7 +1726,7 @@ async def get_sns_timeline_api(
     keyword: str = Query(""),
 ):
     try:
-        result = get_wechat_adapter().sns_timeline(
+        result = get_source("sns").sns_timeline(
             limit=limit, offset=offset, usernames=usernames, keyword=keyword
         )
     except Exception as e:
@@ -1525,7 +1740,7 @@ async def get_sns_users_api(
     limit: int = Query(5000, ge=1, le=20000),
 ):
     try:
-        result = get_wechat_adapter().sns_users(keyword=keyword, limit=limit)
+        result = get_source("sns").sns_users(keyword=keyword, limit=limit)
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e))
     return {"status": "success", **result}
@@ -1539,7 +1754,7 @@ async def sync_sns_latest_api(data: dict = Body(...)):
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="max_scan 必须是整数")
     try:
-        result = get_wechat_adapter().sns_sync_latest(max_scan=max_scan, force=force)
+        result = get_source("sns").sns_sync_latest(max_scan=max_scan, force=force)
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e))
     # 上游若也返回 status，先摘掉，避免把信封的 success 覆盖掉。
@@ -1697,7 +1912,7 @@ def _find_export_id(value, depth: int) -> str:
 async def create_sns_export_api(data: dict = Body(...)):
     """创建朋友圈导出任务；产物 ZIP 只通过 /api/sns/export/{id}/download 回传。"""
     try:
-        result = get_wechat_adapter().sns_export_create(_sns_export_payload(data))
+        result = get_source("export").sns_export_create(_sns_export_payload(data))
     except HTTPException:
         raise
     except Exception as e:
@@ -1708,7 +1923,7 @@ async def create_sns_export_api(data: dict = Body(...)):
 @app.get("/api/sns/export/{export_id}")
 async def get_sns_export_status_api(export_id: str):
     try:
-        result = get_wechat_adapter().sns_export_status(export_id)
+        result = get_source("export").sns_export_status(export_id)
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e))
     return {"status": "success", "export_id": _sns_export_id(result) or export_id, "export": result}
@@ -1743,7 +1958,7 @@ def _export_filename(headers: Dict, export_id: str):
 async def download_sns_export_api(export_id: str):
     """下载导出 ZIP：产物由本服务回传，客户端看不到上游输出目录。"""
     try:
-        content, content_type, headers = get_wechat_adapter().sns_export_download(export_id)
+        content, content_type, headers = get_source("export").sns_export_download(export_id)
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e))
     ascii_name, utf8_name = _export_filename(headers, export_id)
@@ -2403,6 +2618,18 @@ def main():
     print(f"==================================================")
     print(f" Chatlog AI 统一服务 v5.0（微信 WeChatDataAnalysis）已启动")
     print(f" 监听地址: http://127.0.0.1:{port}")
+    # 冷启动预热：本地模式下镜像首次要全量构建（实测 message_0.db 约 1s），
+    # 放到"开始监听"之前完成，否则第一批请求会落到「本地未就绪 → 回退上游 → 上游也不在」上，
+    # 表现成一个看不出所以然的 503。
+    source_note = "upstream（上游 HTTP）"
+    if data_source_mode() == "local":
+        service = get_local_service()
+        if service is not None and service.wait_until_ready(10.0):
+            source_note = "local（本地解密链路，已就绪）"
+        else:
+            detail = (service.status().get("initError") if service is not None else "") or "初始化超时"
+            source_note = "local 未就绪 → 暂回退 upstream（%s）" % detail
+    print(f" 数据来源: {source_note}")
     print(f"==================================================")
     _auto_reply_engine.start()
     _scheduled_send_engine.start()
