@@ -1302,16 +1302,6 @@ def with_image_url(message: Dict, target_id: str) -> Dict:
 
 # ==================== REST API 端点 ====================
 
-@app.get("/api/config")
-async def get_config_api():
-    provider = get_active_provider()
-    return {
-        "has_key": bool(provider and str(provider.get("api_key") or "").strip()),
-        "model": provider.get("model", ""),
-        "provider_name": provider.get("name", ""),
-    }
-
-
 @app.get("/api/providers")
 async def list_providers_api():
     config = load_config()
@@ -1816,19 +1806,6 @@ async def get_sns_media_api(data: dict = Body(...)):
     return Response(content=content, media_type=content_type)
 
 
-@app.get("/api/sns/video")
-async def get_sns_video_api(
-    post_id: str = Query(...),
-    media_id: str = Query(...),
-):
-    """上游 /api/sns/video 只要 account / post_id / media_id，不含 token/key，故保持 GET。"""
-    try:
-        content, content_type = get_wechat_adapter().fetch_sns_video(post_id, media_id)
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=str(e))
-    return Response(content=content, media_type=content_type)
-
-
 _SNS_EXPORT_SCOPES = ("selected", "all")
 _SNS_EXPORT_FORMATS = ("html", "json", "txt", "excel")
 
@@ -2104,40 +2081,6 @@ def generate_reply_text(target_name: str, messages: List[Dict], context_count: i
          {"role": "user", "content": user_content}],
         temperature=0.7,
     ).strip()
-
-
-@app.post("/api/reply/generate")
-async def reply_generate_api(data: dict = Body(...)):
-    target_name = str(data.get("target_name") or "对方").strip()
-    messages = data.get("messages") or []
-    try:
-        context_count = int(data.get("context_count") or 0)
-    except (TypeError, ValueError):
-        context_count = 0
-    context_count = max(1, context_count) if context_count else 80
-    custom_prompt = str(data.get("reply_prompt") or "").strip()
-    inner_prompt = str(data.get("inner_prompt") or "").strip()
-    reply = generate_reply_text(target_name, messages, context_count, custom_prompt, inner_prompt)
-    return {"status": "success", "reply": reply}
-
-
-@app.post("/api/reply/send")
-async def reply_send_api(data: dict = Body(...)):
-    if not AUTOMATION_AVAILABLE or os.name != "nt":
-        raise HTTPException(status_code=400, detail="键盘模拟仅在 Windows 上可用")
-    target_name = str(data.get("target_name") or "").strip()
-    reply = str(data.get("reply") or "").strip()
-    if not target_name or not reply:
-        raise HTTPException(status_code=400, detail="缺少 target_name 或 reply")
-    hotkeys = load_auto_reply()["hotkeys"]
-    # 闸门（T19-A）：手动发送同样走键盘模拟，待确认期间一律拒绝（§7.17）。
-    if not _ensure_send_allowed():
-        raise HTTPException(status_code=409, detail=send_paused_reason())
-    try:
-        automation.send_wechat_message(target_name, reply, hotkeys)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail="键盘模拟发送失败：%s" % exc) from exc
-    return {"status": "success", "message": "已发送"}
 
 
 @app.get("/api/auto-reply/config")

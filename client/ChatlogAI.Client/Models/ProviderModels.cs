@@ -2,16 +2,6 @@ using System.Text.Json.Serialization;
 
 namespace ChatlogAI.Client.Models;
 
-/// <summary>GET /api/config 响应：当前生效模型的简要信息（用于状态栏）。</summary>
-public sealed record ActiveConfigInfo
-{
-    [JsonPropertyName("has_key")] public bool HasKey { get; init; }
-
-    [JsonPropertyName("model")] public string Model { get; init; } = "";
-
-    [JsonPropertyName("provider_name")] public string ProviderName { get; init; } = "";
-}
-
 /// <summary>对外暴露的供应商信息（**不含明文 Key**）。</summary>
 public sealed record ProviderInfo
 {

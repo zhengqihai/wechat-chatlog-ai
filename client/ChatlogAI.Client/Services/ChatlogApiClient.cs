@@ -103,10 +103,6 @@ public sealed class ChatlogApiClient : IDisposable
 
     // ==================== 3. 模型供应商 ====================
 
-    /// <summary>GET /api/config。</summary>
-    public Task<ActiveConfigInfo> GetConfigAsync(CancellationToken cancellationToken = default)
-        => SendAsync<ActiveConfigInfo>(HttpMethod.Get, "/api/config", null, DefaultTimeout, cancellationToken);
-
     /// <summary>GET /api/providers。返回体里的 <c>presets</c> 是界面自动填充的来源。</summary>
     public Task<ProviderListResponse> GetProvidersAsync(CancellationToken cancellationToken = default)
         => SendAsync<ProviderListResponse>(HttpMethod.Get, "/api/providers", null, DefaultTimeout, cancellationToken);
@@ -449,23 +445,6 @@ public sealed class ChatlogApiClient : IDisposable
     {
         var (bytes, contentType, _) = await SendBytesAsync(
             HttpMethod.Post, "/api/sns/media", request, UpstreamTimeout, cancellationToken).ConfigureAwait(false);
-        return (bytes, contentType);
-    }
-
-    /// <summary>GET /api/sns/video，取本地缓存视频字节（上游这条不含 token / key，故为 GET）。</summary>
-    public async Task<(byte[] Bytes, string ContentType)> GetSnsVideoAsync(
-        string postId,
-        string mediaId,
-        CancellationToken cancellationToken = default)
-    {
-        var path = "/api/sns/video" + BuildQuery(
-        [
-            new("post_id", postId),
-            new("media_id", mediaId),
-        ]);
-
-        var (bytes, contentType, _) = await SendBytesAsync(
-            HttpMethod.Get, path, null, DownloadTimeout, cancellationToken).ConfigureAwait(false);
         return (bytes, contentType);
     }
 

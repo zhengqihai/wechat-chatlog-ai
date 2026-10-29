@@ -538,16 +538,6 @@ class WeChatAdapter:
         )
         return content, content_type
 
-    def fetch_sns_video(self, post_id: str, media_id: str,
-                        timeout: int = 180) -> Tuple[bytes, str]:
-        """GET /api/sns/video：上游这条只要 account / post_id / media_id，不含 token/key。"""
-        content, content_type, _ = self._fetch_bytes(
-            self.base_url + "/api/sns/video",
-            {"account": self._resolve_account(), "post_id": post_id, "media_id": media_id},
-            timeout,
-        )
-        return content, content_type
-
     # ==================== 朋友圈导出（异步任务） ====================
 
     def sns_export_create(self, payload: Dict, timeout: int = 180) -> Dict:
