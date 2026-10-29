@@ -26,6 +26,10 @@ __pycache__/
 # ---- 打包产物：staging 与安装包都由 build-installer.ps1 随时重建，不入库 ----
 /client/build/
 
+# ---- .NET 构建产物：由 dotnet build 随时重建，不入库 ----
+/client/ChatlogAI.Client/bin/
+/client/ChatlogAI.Client/obj/
+
 # ---- 客户端自检产物：内含真实 key 与微信数据，绝不入库 ----
 /client/out-data/
 
