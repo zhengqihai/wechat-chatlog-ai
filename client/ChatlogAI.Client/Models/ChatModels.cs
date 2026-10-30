@@ -84,6 +84,15 @@ public sealed record ChatMessage
     /// <summary>图片内容指纹（后端透传上游 <c>imageMd5</c>），仅用于排查，不参与渲染。</summary>
     [JsonPropertyName("image_md5")] public string ImageMd5 { get; init; } = "";
 
+    /// <summary>防撤回（T-F5）：该消息是「别人撤回」的提示（system 消息），应居中灰字展示。</summary>
+    [JsonPropertyName("recall_notice")] public bool RecallNotice { get; init; }
+
+    /// <summary>防撤回（T-F5）：被撤回的原文内容（后端从备份恢复）；非撤回提示为空串。</summary>
+    [JsonPropertyName("recalled_content")] public string RecalledContent { get; init; } = "";
+
+    /// <summary>防撤回（T-F5）：被撤回图片的可访问地址（后端从备份恢复后生成）；非图片撤回为空串。</summary>
+    [JsonPropertyName("recalled_image_url")] public string RecalledImageUrl { get; init; } = "";
+
     [JsonIgnore] public bool IsSelf => Sender == "我";
 
     /// <summary>
@@ -116,4 +125,21 @@ public sealed record MessageListResponse
 
     /// <summary>为空表示正常；无消息时是提示文案。</summary>
     [JsonPropertyName("message")] public string Message { get; init; } = "";
+}
+
+/// <summary>GET /api/anti-recall/config 响应。</summary>
+public sealed record AntiRecallConfigResponse
+{
+    [JsonPropertyName("status")] public string? Status { get; init; }
+
+    [JsonPropertyName("enabled")] public bool Enabled { get; init; }
+
+    /// <summary>是否可用（依赖 local 数据源）；为 false 时界面应禁用开关。</summary>
+    [JsonPropertyName("available")] public bool Available { get; init; }
+}
+
+/// <summary>POST /api/anti-recall/config 请求。</summary>
+public sealed record AntiRecallConfigPatch
+{
+    [JsonPropertyName("enabled")] public bool Enabled { get; init; }
 }

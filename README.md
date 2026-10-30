@@ -1,78 +1,149 @@
-# Chatlog AI 桌面版
+# Chatlog AI
 
-Chatlog AI 在本机启动微信数据读取服务，并在桌面客户端中显示真实会话和聊天记录。选择会话后，可把当前筛选范围内的文本发送给 AI 模型做总结、待办提取或继续问答。支持 DeepSeek、Kimi（Moonshot）、智谱 GLM、通义千问等国内模型，以及任意 OpenAI 兼容的自定义接口，模型与 API Key 均在客户端里配置。发行包已包含 Python 便携运行时，对方不需要另行安装开发环境。
+A Windows desktop app that reads the WeChat chat history already stored on your machine and puts it to work with AI — summaries, action items, Q&A, auto-replies, and scheduled messages. Everything runs locally on your own computer.
 
-## 本机使用
+Chatlog AI starts a local service that reads WeChat's local (encrypted) database files and shows your real conversations in a native desktop client. Pick a conversation, set a time / message range, then send the filtered text to an AI model to summarize, extract action items, or continue a Q&A thread. It also ships auto-reply and scheduled-send engines driven by the same model.
 
-1. 保持微信客户端已登录，启动 `ChatlogAI.exe`（安装版从开始菜单或桌面快捷方式启动）。
-2. 首次运行会自动引导完成微信数据源授权；已授权则直接进入主界面。
-3. 首次进入会自动弹出“模型与 API Key 设置”窗口，选择模型供应商并填写 API Key，验证通过后保存（详见下文“模型配置”）。
-4. 主界面左侧是图标栏，可在 聊天 / 定时任务 / 朋友圈 / 联系人 / 设置 之间切换。聊天模块里左侧选会话，中间设置时间和消息范围，右侧向 AI 提问或生成分析。
-5. 使用完毕后点图标栏底部的退出，程序本次启动的本地服务会一起结束，但不会关闭微信客户端。
+## Features
 
-## 模型配置
+- **Chat browser** — list real WeChat conversations, view messages by time and count range.
+- **AI analysis** — summarize, extract meeting notes / action items / topics, or ask follow-up questions against the currently filtered messages.
+- **Model providers** — DeepSeek, Kimi (Moonshot), Zhipu GLM, Qwen (DashScope), and any OpenAI-compatible custom endpoint. Models and API keys are configured in the client.
+- **Auto-reply** — monitor chosen conversations and auto-answer new messages (optional).
+- **Scheduled send** — send a message on a schedule (`daily` / `weekly` / `interval` / `once`).
+- **Contacts** — browse and export your WeChat contacts.
+- **Moments (朋友圈)** — view your timeline and export it.
+- **Knowledge documents** — upload `md` / `txt` / `html` / `json` files and inject them into auto-reply / scheduled-send prompts.
+- **Anti-recall** — surface messages that were recalled by the sender.
+- **Chat export** — export the current conversation as Markdown / HTML / JSON / CSV.
 
-模型供应商与 API Key 全部在客户端里配置，无需手动编辑配置文件。
+## How it works
 
-1. 在设置模块里点“模型设置”，或在首次进入时自动弹出的窗口中操作。
-2. 选择“供应商类型”（DeepSeek / Kimi / 智谱 GLM / 通义千问 / 自定义），会自动带出对应的 Base URL 与默认模型名。
-3. 填写 API Key 后点击“验证 Key”，程序会真实调用一次接口确认 Key 可用，验证通过后才能保存。
-4. 可添加多个供应商，并在列表中点击“使用”切换当前生效的模型；生成分析与自动回复都使用当前模型。
-5. 点“刷新余额”可查询当前账户余额（DeepSeek、Kimi 支持；智谱 GLM、通义千问、自定义暂不支持）。
+| Layer | Technology | Role |
+|---|---|---|
+| Desktop client | .NET 8 (WPF) | The only UI; also orchestrates startup/teardown of the local services. |
+| Backend | Python (FastAPI) | REST API, AI orchestration, auto-reply / scheduled-send engines, Windows keyboard automation. |
+| Local data layer | Python (`app/localdb/`) | Reads WeChat's encrypted SQLite databases directly from your machine. |
+| Runtime | Bundled portable Python | Ships with the app, so end users need no Python install. |
 
-保存后的 API Key 会写入 `config/api-keys.json`，界面仅显示脱敏形式。请勿把该文件发给别人。
+Flow:
 
-## 消息范围
+```
+[WPF client] ──HTTP 127.0.0.1──▶ [FastAPI backend] ──▶ [local data layer] ──▶ WeChat DB files
+                                        │
+                                        └──────────────────────────────▶ [LLM provider API]
+```
 
-- 时间支持“不限制”以及最近 N 分钟、N 小时、N 天。
-- 消息支持“最近 N 条”以及“不限制（最多读取 2000 条）”。默认读取最近 500 条。
-- 整合层最多读取 2000 条：微信按上游每页最多 500 条分页。
-- 2000 是本工具为交互速度和模型成本设置的读取上限，不代表微信数据库只有 2000 条。
-- 实际发送给模型的是时间与条数两个条件共同筛选后的消息。消息越多，请求越慢，消耗的模型 Token 和费用也越高。
+The backend listens only on `127.0.0.1` and is not exposed to the network.
 
-## 新电脑首次使用
+## Data access & privacy
 
-聊天数据库密钥与登录设备绑定，不能从其他人的电脑复制，也不能包含在分享包中。首次使用必须在本机完成微信授权，整个过程由客户端自动引导：
+- Chatlog AI **reads** WeChat's local database files directly. It **does not** modify your WeChat database.
+- Reading requires a per-account database key (`db_key`). This key is bound to your WeChat account and device — it cannot be copied from another machine and is never part of a release.
+- Chatlog AI **does not** extract the key itself and **does not** bypass WeChat's login or device authorization. You must already have WeChat installed and logged in on the same machine, with chat history present locally.
+- Non-text messages (images, voice, video, files, …) are represented as type labels in AI analysis; no OCR or speech recognition is performed.
+- **Please note:** if you enable **auto-reply** or **scheduled send**, the app genuinely sends messages in WeChat by simulating keyboard input. That is what those two features do by definition. Verify each guarded conversation and scheduled task before enabling them, and watch the on-screen send status.
+- Only when you explicitly run an analysis or ask a question is the currently filtered chat text sent to the model API address of the active provider.
 
-1. 安装并登录微信客户端，确保本机已有聊天记录。
-2. 以管理员身份启动 `ChatlogAI.exe`。读取微信数据库需要管理员权限；若检测到尚未授权且当前不是管理员，程序会给出提示后退出，不会启动分析服务。
-3. 程序自动检测授权状态：尚未授权时，先启动微信数据源并打开授权页面（`http://127.0.0.1:10392`）；已授权则直接启动分析服务。
-4. 在授权页面按提示检测当前账号、获取并验证数据库密钥。
-5. 授权完成后**无需关闭程序**：程序原地轮询到密钥生成后，会自动继续启动分析服务并进入主界面。若中途关闭程序，本次授权不生效，下次启动会重新引导。
+Sensitive data (database keys, chat caches, logs, model API keys) is stored under `%ProgramData%\ChatlogAI` and is intentionally excluded from the repository (see `.gitignore`).
 
-需要更换微信账号或重新扫描密钥时，使用开始菜单里的「Chatlog AI 重新初始化」（等价于 `ChatlogAI.exe --initialize`），它会强制重新进入授权阶段。日常使用直接启动 `ChatlogAI.exe` 即可。
+## Installation
 
-密钥提取是上游解析器的能力，受客户端版本、进程权限和安全软件影响。涉及进程检查、客户端重启或系统授权的步骤必须由用户确认，整合程序不能静默绕过。失败时先确认客户端版本与本文“已验证版本”一致，并查看 `logs` 目录。
+1. Install and log in to WeChat, and make sure the machine already has chat history.
+2. Download `ChatlogAI-Setup-<version>.exe` and run it. Choose the install location and, optionally, a desktop shortcut.
+3. Launch **Chatlog AI** from the Start menu or desktop shortcut. Reading WeChat data requires administrator rights; run the app as administrator.
+4. On first run, import the database key (below) and configure a model provider + API key.
 
-## 分享给别人
+## First-time setup (importing the database key)
 
-发送安装程序（由 `client\build-installer.ps1` 生成，文件名形如 `ChatlogAI-Setup-<版本>.exe`）。不要把整个个人使用目录压缩后发送，因为个人目录的 `data` 中包含本机数据库密钥和聊天缓存，`config` 目录会保存模型 API Key 等配置，`logs` 也可能含账号路径。
+Chatlog AI needs your WeChat `db_key` to decrypt the local database. This is a one-time, per-account step:
 
-对方安装后只需：
+1. Obtain the `db_key` for your WeChat account using a compatible third-party key-extraction tool.
+2. In the client, open the **WeChat Account** window and paste the key into the "WeChat database key" section.
+3. The client verifies the key by actually decrypting the first page of your local database before accepting it. Invalid keys are rejected and are not saved.
 
-1. 登录微信，确保本机已有聊天记录。
-2. 以管理员身份启动，按提示完成首次授权（同一进程内自动继续，无需手动重启）。
-3. 在客户端里配置模型供应商与 API Key 即可使用。
+The key is stored locally in `%ProgramData%\ChatlogAI\config\wechat-keys.json`. Treat it as a credential — do not share it. If you change accounts, change your password, re-login the device, or reinstall WeChat, you will need to import the key again.
 
-## 数据与隐私
+## Model configuration
 
-- 本程序只**读取**本机已有的聊天数据库，不会修改客户端数据库。
-- **请特别注意**：若你启用了**自动回复**或**定时发送**，程序会通过模拟键盘操作在微信客户端里**真实发送消息**。这是这两项功能的定义。请在使用前确认每个守护对象/定时任务指向的会话正确，并留意界面上的发送状态。
-- 只有点击分析或提问后，当前筛选范围内的聊天文本才会发送到当前选中的模型 API 地址。
-- 图片、语音、视频、文件等非文本消息只以类型标签参与统计，不做 OCR 或语音识别。
-- 所有本机密钥与缓存都在 `data`，运行日志在 `logs`，模型 API Key 等配置保存在 `config` 目录。这些文件/目录不得分享。
-- 仅处理本人合法持有或已取得明确授权的数据。
+Providers and API keys are configured entirely in the client — no manual config-file editing.
 
-## 已验证版本
+1. Open **Settings → Model Settings** (or the dialog that appears on first launch).
+2. Pick a provider type (DeepSeek / Kimi / Zhipu GLM / Qwen / Custom); the Base URL and default model are filled in automatically.
+3. Enter your API key and click **Validate**. The app makes a real call to confirm the key before saving.
+4. Add multiple providers and click **Use** to switch the active one. Analysis and auto-reply always use the active model.
+5. **Refresh balance** queries the current account balance (supported for DeepSeek and Kimi).
+
+Saved keys are written to `config/api-keys.json` and only shown masked in the UI. Do not share that file.
+
+## Building from source
+
+Prerequisites:
 
 - Windows 10/11 x64
-- 微信：Weixin 4.1.12.26
-- 微信解析器：WeChatDataAnalysis 2.0.7
+- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
+- [Inno Setup 6.3+](https://jrsoftware.org/isdl.php)
 
-客户端升级后，数据库结构或密钥机制可能变化。当前微信原生运行时清单有效期截至 2026-09-23，上游更新后可能需要重新制作发行包。
+Build the installer:
 
-## 组件与许可
+```powershell
+powershell -ExecutionPolicy Bypass -File .\client\build-installer.ps1
+```
 
-- WeChatDataAnalysis：仅用于处理本人合法持有或明确授权的数据，具体许可见 `licenses\WeChatDataAnalysis`。
+This runs `dotnet publish` (Release / win-x64 / self-contained), assembles a staging directory from `app\` and `runtime\`, runs a hard security gate (the build aborts if any key, chat data, log, or bytecode cache is found in the package), and finally compiles the installer with Inno Setup.
 
-本整合层不会绕过微信的登录与本机授权。请遵守软件许可、平台条款及所在地法律。
+Output: `client\build\dist\ChatlogAI-Setup-<version>.exe`
+
+Useful switches:
+
+- `-SkipPublish` — reuse the previously published client (debugging the packaging flow only).
+- `-SkipInstaller` — stop after staging + security checks (no Inno Setup needed).
+- `-Version <x.y.z>` — override the version (default reads `client\VERSION`).
+
+## Project structure
+
+```
+app/                     Python backend (FastAPI)
+  server.py              REST API + business logic (analysis, auto-reply, scheduled send)
+  adapters.py            data-source adapter (upstream HTTP / local)
+  automation.py          Windows keyboard & clipboard automation
+  config_defaults.py     single source of truth for default config + prompts
+  docs.py                knowledge-document module
+  localdb/               self-hosted local WeChat database reader (no upstream dependency)
+client/                  .NET 8 WPF desktop client
+  ChatlogAI.Client/      UI, view models, startup orchestration (Bootstrap/)
+  installer/             Inno Setup script (ChatlogAI.iss)
+  build-installer.ps1    one-command packaging
+  VERSION                version source of truth
+runtime/                 bundled portable runtimes (Python + third-party packages)
+config/                  user config — generated at first run, not committed (see .gitignore)
+docs/                    design & API reference documents
+licenses/                third-party license texts
+```
+
+## Verified environment
+
+- Windows 10/11 x64
+- WeChat: Weixin 4.1.12.26
+- .NET 8 desktop runtime
+- Python 3.11 (bundled portable runtime)
+
+WeChat upgrades can change the database layout or key handling, so newer WeChat versions may require updates to the local data layer.
+
+## Documentation
+
+- `docs/SELFHOST_DATA_PLAN.md` — design of the self-hosted local database-reading layer.
+- `docs/API_REFERENCE.md` — full HTTP API and data-model reference.
+- `docs/DOTNET_CLIENT_PLAN.md` — desktop client architecture and implementation notes.
+- `docs/C6_IMAGE_INVESTIGATION.md` — status of the local image-decryption chain.
+
+## License & third-party notices
+
+This repository bundles or derives from third-party components. See `licenses/` for the full texts:
+
+- **Python** — PSF License (`licenses/Python/LICENSE.txt`).
+- **WeFlow** — CC BY-NC-SA 4.0 (`licenses/WeFlow/LICENSE.txt`).
+
+## Disclaimer
+
+Chatlog AI only processes data you legally own or are authorized to access. It does not bypass WeChat's login or device authorization. Please comply with the software license, platform terms of service, and the laws of your jurisdiction. Use of the auto-reply and scheduled-send features is at your own risk.

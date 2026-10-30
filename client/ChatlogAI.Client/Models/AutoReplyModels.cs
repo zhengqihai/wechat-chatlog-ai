@@ -16,6 +16,9 @@ public sealed record GuardTarget
     /// <summary>该会话的**内层**提示词（单独口吻）。</summary>
     [JsonPropertyName("prompt")] public string Prompt { get; init; } = "";
 
+    /// <summary>关联的知识文档 id 列表（T-F4，每会话独立）。</summary>
+    [JsonPropertyName("doc_ids")] public IReadOnlyList<string> DocIds { get; init; } = [];
+
     [JsonIgnore] public bool IsGroup => string.Equals(Type, "group", StringComparison.OrdinalIgnoreCase);
 }
 

@@ -4,7 +4,7 @@
         xmlns:modules="clr-namespace:ChatlogAI.Client.Views.Modules"
         Title="Chatlog AI"
         Height="800" Width="1600"
-        MinHeight="560" MinWidth="1314"
+        MinHeight="560" MinWidth="1574"
         WindowStartupLocation="CenterScreen"
         Background="{DynamicResource PageBrush}"
         FontFamily="Microsoft YaHei UI, Segoe UI"
@@ -16,7 +16,7 @@
          本窗口只负责"图标栏 + 内容宿主"，加模块不必再回来改列定义。
 
          MinWidth 算据：56（图标栏）+ 240（会话列表）+ 640（消息+筛选：横向 StackPanel 的天然宽度，
-         不换行，是这一屏真正的硬约束）+ 360（AI 分析）= 1296，再留 18px 窗口边框余量 → 1314。
+         不换行，是这一屏真正的硬约束）+ 260（会话洞察）+ 360（AI 分析）= 1556，再留 18px 窗口边框余量 → 1574。
          余量口径与旧值一致（旧 1490 = 四栏 1472 + 18）。
          注意 56 是**取代**原来的 232 定时发送栏，不是叠加：旧值里含那 232，新布局已无此栏。 -->
 
@@ -172,6 +172,11 @@
                                  IsChecked="{Binding IsContactsModule, Mode=TwoWay}" />
                     <RadioButton GroupName="MainModuleNav"
                                  Style="{StaticResource IconRailNavButton}"
+                                 Content="文档"
+                                 ToolTip="文档"
+                                 IsChecked="{Binding IsDocsModule, Mode=TwoWay}" />
+                    <RadioButton GroupName="MainModuleNav"
+                                 Style="{StaticResource IconRailNavButton}"
                                  Content="设置"
                                  ToolTip="设置"
                                  IsChecked="{Binding IsSettingsModule, Mode=TwoWay}" />
@@ -257,6 +262,19 @@
                     </Style>
                 </modules:ContactsModuleView.Style>
             </modules:ContactsModuleView>
+
+            <modules:DocsModuleView>
+                <modules:DocsModuleView.Style>
+                    <Style TargetType="modules:DocsModuleView">
+                        <Setter Property="Visibility" Value="Collapsed" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsDocsModule}" Value="True">
+                                <Setter Property="Visibility" Value="Visible" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </modules:DocsModuleView.Style>
+            </modules:DocsModuleView>
 
             <modules:SettingsModuleView>
                 <modules:SettingsModuleView.Style>

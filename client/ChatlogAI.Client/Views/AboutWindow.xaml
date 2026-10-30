@@ -1,0 +1,98 @@
+<Window x:Class="ChatlogAI.Client.Views.AboutWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="关于"
+        Width="420"
+        SizeToContent="Height"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False"
+        WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource CardBrush}"
+        Foreground="{DynamicResource TextPrimaryBrush}"
+        FontFamily="Microsoft YaHei UI, Segoe UI"
+        Icon="pack://application:,,,/Assets/app.ico">
+
+    <!-- 关于（§14.2.2 设置项导航里列出的一项）。
+         为什么用自定义 Window 而不是 MessageBox：要竖排「名称 / 版本」两行并对齐，
+         MessageBox 只有一段纯文本，表达不了这种对齐；而且以后要补版权/链接时也不必换控件。
+         它是**纯告知**：不读也不写任何业务状态，因此不建 ViewModel，与 DisclaimerWindow 同一姿态。 -->
+
+    <StackPanel Margin="28,24,28,20">
+        <TextBlock Text="关于"
+                   FontSize="16"
+                   FontWeight="SemiBold"
+                   Foreground="{DynamicResource TextPrimaryBrush}" />
+
+        <Border Height="1"
+                Margin="0,12,0,0"
+                Background="{DynamicResource LineBrush}" />
+
+        <Grid Margin="0,16,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <!-- 名称是固定标签，直接写在 XAML；版本必须从程序集读（见 .xaml.cs），
+                 写死会出现"界面 1.0.0、实际装的 1.0.1"这种对不上的情况。 -->
+            <TextBlock Grid.Column="0"
+                       Text="程序名称"
+                       Foreground="{DynamicResource TextSecondaryBrush}" />
+            <TextBlock Grid.Column="1"
+                       Margin="16,0,0,0"
+                       Text="微信助手-ChatLog-Ai"
+                       TextWrapping="Wrap"
+                       Foreground="{DynamicResource TextPrimaryBrush}" />
+        </Grid>
+
+        <Grid Margin="0,8,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0"
+                       Text="版本"
+                       Foreground="{DynamicResource TextSecondaryBrush}" />
+            <TextBlock x:Name="VersionText"
+                       Grid.Column="1"
+                       Margin="16,0,0,0"
+                       TextWrapping="Wrap"
+                       Foreground="{DynamicResource TextPrimaryBrush}" />
+        </Grid>
+
+        <Grid Margin="0,8,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0"
+                       Text="开发者联系方式"
+                       Foreground="{DynamicResource TextSecondaryBrush}" />
+            <TextBlock Grid.Column="1"
+                       Margin="16,0,0,0"
+                       Text="2922977793@qq.com"
+                       TextWrapping="Wrap"
+                       Foreground="{DynamicResource TextPrimaryBrush}" />
+        </Grid>
+
+        <TextBlock Margin="0,16,0,0"
+                   Text="「微信聊天记录 + AI 分析」工具。"
+                   TextWrapping="Wrap"
+                   LineHeight="20"
+                   Foreground="{DynamicResource TextPrimaryBrush}" />
+
+        <TextBlock Margin="0,8,0,0"
+                   Text="使用条款见启动时的免责声明；在「设置 → 免责声明」里可以再次查看。"
+                   TextWrapping="Wrap"
+                   LineHeight="20"
+                   Foreground="{DynamicResource TextMutedBrush}" />
+
+        <!-- 只做关闭：IsDefault / IsCancel 让回车与 Esc 都能关掉（同 DisclaimerWindow）。 -->
+        <Button Margin="0,16,0,0"
+                HorizontalAlignment="Right"
+                MinWidth="96"
+                Style="{StaticResource PrimaryButton}"
+                Content="关闭"
+                IsDefault="True"
+                IsCancel="True" />
+    </StackPanel>
+</Window>

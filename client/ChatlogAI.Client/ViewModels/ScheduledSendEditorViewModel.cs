@@ -62,6 +62,8 @@ public sealed class ScheduledSendEditorViewModel : ObservableObject
     private string _jitterMinutesText = "15";
     private string _contextCountText = "80";
     private string _prompt = "";
+    private List<string> _docIds = [];
+    private IReadOnlyList<DocItem> _docs = [];
     private bool _taskEnabled = true;
     private string _previewText = "";
     private string _chatPlaceholder = "正在读取微信会话……";
@@ -248,6 +250,22 @@ public sealed class ScheduledSendEditorViewModel : ObservableObject
         set => SetProperty(ref _prompt, value);
     }
 
+    /// <summary>关联文档按钮的文案：未关联时「关联文档」，已关联时带数量。</summary>
+    public string DocCountText => _docIds.Count == 0 ? "关联文档" : $"关联文档（{_docIds.Count}）";
+
+    /// <summary>当前关联的知识文档 id（只读，改动走 <see cref="SetDocIds"/>）。</summary>
+    public IReadOnlyList<string> DocIds => _docIds;
+
+    /// <summary>知识文档列表，供 View 打开「关联文档」选择器时取用。</summary>
+    public IReadOnlyList<DocItem> Docs => _docs;
+
+    /// <summary>文档选择器返回后写入勾选的文档 id，并刷新按钮文案。</summary>
+    public void SetDocIds(IReadOnlyList<string> docIds)
+    {
+        _docIds = docIds.ToList();
+        OnPropertyChanged(nameof(DocCountText));
+    }
+
     public bool TaskEnabled
     {
         get => _taskEnabled;
@@ -293,7 +311,24 @@ public sealed class ScheduledSendEditorViewModel : ObservableObject
             return;
         }
 
+        await LoadDocsAsync();
         ApplyOriginal();
+    }
+
+    /// <summary>加载知识文档列表（T-F4）。失败静默：文档是可选增强，不阻断任务编辑。</summary>
+    private async Task LoadDocsAsync()
+    {
+        try
+        {
+            _docs = (await _api.GetDocsAsync(_lifetime.Token)).Docs;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (ChatlogApiException)
+        {
+            _docs = [];
+        }
     }
 
     /// <summary>弹窗关闭时调用：取消在途请求。</summary>
@@ -336,6 +371,7 @@ public sealed class ScheduledSendEditorViewModel : ObservableObject
         JitterMinutesText = _original.JitterMinutes.ToString(CultureInfo.InvariantCulture);
         ContextCountText = _original.ContextCount.ToString(CultureInfo.InvariantCulture);
         Prompt = _original.Prompt;
+        SetDocIds(_original.DocIds);
 
         if (_original.Mode == ScheduledSendModes.Once && _original.RunAt.Length >= 16)
         {
@@ -519,6 +555,7 @@ public sealed class ScheduledSendEditorViewModel : ObservableObject
             JitterMinutes = jitter,
             ContextCount = contextCount,
             Prompt = Prompt.Trim(),
+            DocIds = _docIds,
         };
 
         return true;

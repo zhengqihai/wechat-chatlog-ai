@@ -21,6 +21,7 @@ public enum MainModule
     ScheduledSend,
     Moments,
     Contacts,
+    Docs,
     Settings,
 }
 
@@ -47,6 +48,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private static readonly TimeSpan MessagePollInterval = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan AutoReplyPollInterval = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan BalancePollInterval = TimeSpan.FromSeconds(60);
+    /// <summary>会话洞察（今日发言）的增量刷新周期。服务端只扫游标之后的新消息，60 秒足够。</summary>
+    private static readonly TimeSpan InsightPollInterval = TimeSpan.FromSeconds(60);
 
     /// <summary>定时发送的运行状态（下次触发时间 / 引擎是否在跑）。触发本身在 Python 侧，这里只刷展示。</summary>
     private static readonly TimeSpan ScheduledSendPollInterval = TimeSpan.FromSeconds(15);
@@ -151,6 +154,20 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         // 时间线要分页（每页 20 条），进模块还得先同步一次实时增量，用户不进这个模块就都是白花。
         // 加载由模块首次可见时触发（MomentsModuleView 的 IsVisibleChanged）。
         Moments = new MomentsModuleViewModel(_api);
+
+        // 「文档」模块（T-F4）：与 Contacts / Moments 同一挂法 —— 只 new、不加载，
+        // 加载由模块首次可见时触发（DocsModuleView 的 IsVisibleChanged）。
+        Docs = new DocsModuleViewModel(_api);
+
+        // 「会话洞察」列（C7/C8）：随 SelectedChat 切换，进入会话时建立统计观察，
+        // 之后由 60 秒轮询增量刷新。它没有独立模块入口，所以构造即用。
+        SessionInsight = new SessionInsightViewModel(_api);
+
+        // 设置页的群成员扫描配置。只 new，加载放到 InitializeAsync（避免构造期发请求）。
+        GroupWatch = new GroupWatchSettingsViewModel(_api);
+
+        // 设置页的防撤回开关（T-F5）。同样只 new，加载放到 InitializeAsync。
+        AntiRecall = new AntiRecallSettingsViewModel(_api);
     }
 
     // ==================== 对外事件（供 View 处理"必须由它做"的事） ====================
@@ -196,6 +213,24 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public MomentsModuleViewModel Moments { get; }
 
     /// <summary>
+    /// 「文档」模块（T-F4）。常驻子 VM，随主 VM 一起构造；模块内用 <c>{Binding Docs.Xxx}</c> 绑定。
+    /// 加载由模块首次可见时调 <see cref="DocsModuleViewModel.EnsureLoadedAsync"/> 触发。
+    /// </summary>
+    public DocsModuleViewModel Docs { get; }
+
+    /// <summary>
+    /// 聊天模块第四列「会话洞察」。绑定在 <c>{Binding SessionInsight.Xxx}</c> 上。
+    /// 生命周期与主 VM 相同；切换会话时由 <see cref="SelectedChat"/> 驱动。
+    /// </summary>
+    public SessionInsightViewModel SessionInsight { get; }
+
+    /// <summary>设置页的群成员扫描配置（开关 / 间隔 / 手动扫描）。</summary>
+    public GroupWatchSettingsViewModel GroupWatch { get; }
+
+    /// <summary>设置页的防撤回开关（T-F5）。</summary>
+    public AntiRecallSettingsViewModel AntiRecall { get; }
+
+    /// <summary>
     /// 需要打开「模型与 API Key 设置」弹窗（T9）。目前只有一个触发点：
     /// <see cref="InitializeAsync"/> 末尾发现服务端没有生效供应商时自动弹一次，
     /// 对照 app.js 的 <c>if (!activeProviderId) openModelModal()</c>。
@@ -231,6 +266,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             OnPropertyChanged(nameof(IsScheduledSendModule));
             OnPropertyChanged(nameof(IsMomentsModule));
             OnPropertyChanged(nameof(IsContactsModule));
+            OnPropertyChanged(nameof(IsDocsModule));
             OnPropertyChanged(nameof(IsSettingsModule));
         }
     }
@@ -287,6 +323,18 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             if (value)
             {
                 CurrentModule = MainModule.Contacts;
+            }
+        }
+    }
+
+    public bool IsDocsModule
+    {
+        get => _currentModule == MainModule.Docs;
+        set
+        {
+            if (value)
+            {
+                CurrentModule = MainModule.Docs;
             }
         }
     }
@@ -365,6 +413,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
             _ = LoadHistoryAsync();
             _ = ReloadMessagesAsync();
+            // 会话洞察：进入瞬间算一次今日统计，之后由 60 秒轮询增量累加。
+            _ = SessionInsight.SwitchToAsync(value);
         }
     }
 
@@ -700,6 +750,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         await LoadProvidersAsync(cancellationToken);
         await LoadAutoReplyConfigAsync(cancellationToken);
         await ScheduledSend.LoadAsync();
+        await GroupWatch.LoadAsync();
+        await AntiRecall.LoadAsync();
         await LoadChatsAsync(showLoading: true, cancellationToken);
 
         // 原前端在这里还有 refreshBalance()：**故意不 await**，
@@ -724,6 +776,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         AddTimer(AutoReplyPollInterval, () => _ = RefreshAutoReplyStatusAsync());
         AddTimer(ScheduledSendPollInterval, () => _ = ScheduledSend.RefreshStatusAsync());
         AddTimer(BalancePollInterval, () => _ = RefreshBalanceAsync());
+        AddTimer(InsightPollInterval, () => _ = SessionInsight.RefreshAsync());
     }
 
     private void AddTimer(TimeSpan interval, Action tick)

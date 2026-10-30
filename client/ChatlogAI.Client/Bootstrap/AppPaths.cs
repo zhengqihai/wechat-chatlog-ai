@@ -49,6 +49,9 @@ public sealed class AppPaths
     /// <summary>后端入口脚本，等价 launcher.py 的 server_command() 里的 APP_DIR/server.py。</summary>
     public string ServerScript => Path.Combine(AppDir, "server.py");
 
+    /// <summary>程序版本文件（源码里的 client/VERSION，随安装包分发到 RootDir）。</summary>
+    public string VersionFile => Path.Combine(RootDir, "VERSION");
+
     /// <summary>便携 Python 解释器。</summary>
     public string PythonExe => Path.Combine(RootDir, "runtime", "python", "python.exe");
 

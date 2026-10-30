@@ -16,6 +16,9 @@
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="240" MinWidth="220" />
             <ColumnDefinition Width="*" MinWidth="440" />
+            <!-- 第 2 栏：会话洞察（群成员 / 进退群 / 今日发言）。固定宽度，
+                 卡片需要在"消息区"与"AI 分析"之间常驻可见，不做折叠。 -->
+            <ColumnDefinition Width="260" MinWidth="240" />
             <ColumnDefinition Width="360" MinWidth="340" />
         </Grid.ColumnDefinitions>
 
@@ -284,7 +287,8 @@
                      Background="Transparent"
                      BorderThickness="0"
                      Padding="18,12,18,18"
-                     ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                     ScrollViewer.ScrollChanged="OnMessageScrollChanged">
                 <ListBox.ItemTemplate>
                     <DataTemplate>
                         <!-- IsSelf 决定左右对齐与底色（对照 .message.mine）。
@@ -308,24 +312,43 @@
                                             <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
                                             <Setter Property="BorderBrush" Value="{DynamicResource AccentSoftBorderBrush}" />
                                         </DataTrigger>
+                                        <DataTrigger Binding="{Binding IsRecallNotice}" Value="True">
+                                            <Setter Property="HorizontalAlignment" Value="Center" />
+                                            <Setter Property="Background" Value="Transparent" />
+                                            <Setter Property="BorderBrush" Value="Transparent" />
+                                        </DataTrigger>
                                     </Style.Triggers>
                                 </Style>
                             </Border.Style>
                             <StackPanel>
                                 <TextBlock Text="{Binding Sender}"
                                            FontSize="11"
-                                           Foreground="{DynamicResource TextSecondaryBrush}" />
+                                           Foreground="{DynamicResource TextSecondaryBrush}">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsRecallNotice}" Value="True">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
 
                                 <!-- 图片消息：仅 IsImage 时显示。
                                      Source 绑 null（非图片消息）不触发类型转换，因此不会刷绑定错误。
                                      Stretch=Uniform 配合 MaxWidth/MaxHeight，保证长图不被裁剪、
                                      也不会有一张图撑破气泡或吃掉整屏。 -->
-                                <Image Source="{Binding ImageUrl}"
+                                <Image Source="{Binding DisplayImageUrl}"
                                        Margin="0,6,0,0"
                                        MaxWidth="360"
                                        MaxHeight="360"
                                        Stretch="Uniform"
-                                       HorizontalAlignment="Left">
+                                       HorizontalAlignment="Left"
+                                       Cursor="Hand"
+                                       ToolTip="{Binding ImageTooltip}"
+                                       MouseLeftButtonDown="OnImageClick">
                                     <Image.Style>
                                         <Style TargetType="Image">
                                             <Setter Property="Visibility" Value="Collapsed" />
@@ -343,19 +366,62 @@
                                 <TextBlock Text="{Binding Content}"
                                            Margin="0,4,0,0"
                                            FontSize="13"
-                                           Foreground="{DynamicResource TextPrimaryBrush}"
                                            TextWrapping="Wrap">
                                     <TextBlock.Style>
                                         <Style TargetType="TextBlock">
                                             <Setter Property="Visibility" Value="Visible" />
+                                            <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
                                             <Style.Triggers>
                                                 <DataTrigger Binding="{Binding IsImage}" Value="True">
                                                     <Setter Property="Visibility" Value="Collapsed" />
+                                                </DataTrigger>
+                                                <!-- 撤回提示：居中灰字。 -->
+                                                <DataTrigger Binding="{Binding IsRecallNotice}" Value="True">
+                                                    <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}" />
+                                                    <Setter Property="FontStyle" Value="Italic" />
                                                 </DataTrigger>
                                             </Style.Triggers>
                                         </Style>
                                     </TextBlock.Style>
                                 </TextBlock>
+                                <!-- 被撤回的原文（T-F5）：撤回提示下补显示后端从备份恢复的原文。 -->
+                                <TextBlock Margin="0,4,0,0"
+                                           FontSize="12"
+                                           Foreground="{DynamicResource TextMutedBrush}"
+                                           TextWrapping="Wrap">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding RecalledContent}" Value="">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                    <Run Text="已撤回原文：" FontWeight="SemiBold" />
+                                    <Run Text="{Binding RecalledContent, Mode=OneWay}" />
+                                </TextBlock>
+                                <!-- 被撤回的图片（T-F5）：后端从备份恢复 image_hash 后生成地址。 -->
+                                <Image Source="{Binding RecalledImageUrl}"
+                                       Margin="0,6,0,0"
+                                       MaxWidth="360"
+                                       MaxHeight="360"
+                                       Stretch="Uniform"
+                                       HorizontalAlignment="Left"
+                                       Cursor="Hand"
+                                       ToolTip="被撤回的图片">
+                                    <Image.Style>
+                                        <Style TargetType="Image">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsRecalledImage}" Value="True">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Image.Style>
+                                </Image>
                                 <TextBlock Text="{Binding Time}"
                                            Margin="0,4,0,0"
                                            FontSize="10"
@@ -388,10 +454,315 @@
             </TextBlock>
         </Grid>
 
-        <!-- ==================== 第 2 栏：AI 分析 ====================
+        <!-- ==================== 第 2 栏：会话洞察 ====================
+             群聊：成员名单 + 最近进退群 + 今日发言排行；
+             好友：今日消息数（我 / 对方 / 合计）。
+             数据全部来自后端，客户端不自己数消息（见 SessionInsightViewModel 的类注释）。
+             成员与排行都用 ListBox：群可能几百人，只有 ListBox 带容器虚拟化。 -->
+        <Border Grid.Column="2"
+                Background="{DynamicResource PanelBrush}"
+                BorderBrush="{DynamicResource LineBrush}"
+                BorderThickness="1,0,0,0">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <Grid Grid.Row="0" Margin="14,14,14,6">
+                    <TextBlock Text="会话洞察"
+                               FontSize="15"
+                               FontWeight="SemiBold"
+                               VerticalAlignment="Center"
+                               Foreground="{DynamicResource TextPrimaryBrush}" />
+                    <Button Content="刷新"
+                            HorizontalAlignment="Right"
+                            Padding="7,2"
+                            MinWidth="0"
+                            FontSize="10"
+                            Command="{Binding SessionInsight.RefreshCommand}"
+                            ToolTip="重新读取成员与今日发言（服务端只补新增消息）" />
+                </Grid>
+
+                <TextBlock Grid.Row="1"
+                           Text="{Binding SessionInsight.StatusText}"
+                           Margin="14,0,14,8"
+                           FontSize="11"
+                           TextWrapping="Wrap"
+                           Foreground="{DynamicResource TextMutedBrush}" />
+
+                <Grid Grid.Row="2">
+                    <!-- 群聊视图 -->
+                    <Grid Visibility="{Binding SessionInsight.IsGroup, Converter={StaticResource BoolToVis}}">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="170" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="96" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0"
+                                   Text="{Binding SessionInsight.MembersHeader}"
+                                   Margin="14,0,14,4"
+                                   FontSize="12"
+                                   FontWeight="SemiBold"
+                                   Foreground="{DynamicResource TextSecondaryBrush}" />
+
+                        <TextBox Grid.Row="1"
+                                 Margin="14,0,14,6"
+                                 FontSize="12"
+                                 Text="{Binding SessionInsight.MemberSearch, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="按成员显示名过滤" />
+
+                        <ListBox Grid.Row="2"
+                                 Margin="8,0,8,0"
+                                 ItemsSource="{Binding SessionInsight.Members}"
+                                 Background="Transparent"
+                                 BorderThickness="0"
+                                 Padding="0"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="6,3">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <Border Grid.Column="0"
+                                                Width="22" Height="22"
+                                                CornerRadius="11"
+                                                Background="{DynamicResource SubtleBrush}">
+                                            <TextBlock Text="{Binding AvatarText}"
+                                                       FontSize="10"
+                                                       HorizontalAlignment="Center"
+                                                       VerticalAlignment="Center"
+                                                       Foreground="{DynamicResource TextSecondaryBrush}" />
+                                        </Border>
+                                        <TextBlock Grid.Column="1"
+                                                   Text="{Binding DisplayName}"
+                                                   Margin="7,0,6,0"
+                                                   VerticalAlignment="Center"
+                                                   FontSize="12"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   Foreground="{DynamicResource TextPrimaryBrush}" />
+                                        <TextBlock Grid.Column="2"
+                                                   Text="{Binding FirstSeenText}"
+                                                   VerticalAlignment="Center"
+                                                   FontSize="10"
+                                                   ToolTip="首次观测到该成员的时间（首次扫描只建基线）"
+                                                   Foreground="{DynamicResource TextMutedBrush}" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+
+                        <TextBlock Grid.Row="3"
+                                   Text="{Binding SessionInsight.ChangesHeader}"
+                                   Margin="14,8,14,4"
+                                   FontSize="12"
+                                   FontWeight="SemiBold"
+                                   Foreground="{DynamicResource TextSecondaryBrush}" />
+
+                        <Grid Grid.Row="4">
+                            <ListBox Margin="8,0,8,0"
+                                     ItemsSource="{Binding SessionInsight.Changes}"
+                                     Background="Transparent"
+                                     BorderThickness="0"
+                                     Padding="0"
+                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Margin="6,3">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <Border Grid.Column="0" Padding="4,0" CornerRadius="3">
+                                                <Border.Style>
+                                                    <Style TargetType="Border">
+                                                        <Setter Property="Background" Value="{DynamicResource DangerSoftBrush}" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding IsJoin}" Value="True">
+                                                                <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Border.Style>
+                                                <TextBlock Text="{Binding TypeText}" FontSize="10">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Setter Property="Foreground" Value="{DynamicResource DangerBrush}" />
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding IsJoin}" Value="True">
+                                                                    <Setter Property="Foreground" Value="{DynamicResource AccentTextBrush}" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                            </Border>
+                                            <TextBlock Grid.Column="1"
+                                                       Text="{Binding Name}"
+                                                       Margin="6,0,6,0"
+                                                       VerticalAlignment="Center"
+                                                       FontSize="12"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       Foreground="{DynamicResource TextPrimaryBrush}" />
+                                            <TextBlock Grid.Column="2"
+                                                       Text="{Binding TimeText}"
+                                                       VerticalAlignment="Center"
+                                                       FontSize="10"
+                                                       Foreground="{DynamicResource TextMutedBrush}" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                            <!-- 空态：首次扫描只建基线，不会凭空造出入群事件。 -->
+                            <TextBlock Text="暂无变动（首次扫描只建基线）"
+                                       Margin="14,2,14,0"
+                                       VerticalAlignment="Top"
+                                       FontSize="11"
+                                       TextWrapping="Wrap"
+                                       Foreground="{DynamicResource TextMutedBrush}">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding SessionInsight.HasChanges}" Value="False">
+                                                <Setter Property="Visibility" Value="Visible" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </Grid>
+
+                        <Grid Grid.Row="5" Margin="14,8,14,4">
+                            <TextBlock Text="{Binding SessionInsight.StatsHeader}"
+                                       FontSize="12"
+                                       FontWeight="SemiBold"
+                                       Foreground="{DynamicResource TextSecondaryBrush}" />
+                            <TextBlock Text="{Binding SessionInsight.TotalText}"
+                                       HorizontalAlignment="Right"
+                                       FontSize="10"
+                                       Foreground="{DynamicResource TextMutedBrush}" />
+                        </Grid>
+
+                        <ListBox Grid.Row="6"
+                                 Margin="8,0,8,0"
+                                 ItemsSource="{Binding SessionInsight.Ranking}"
+                                 Background="Transparent"
+                                 BorderThickness="0"
+                                 Padding="0"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="6,3">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="18" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0"
+                                                   Text="{Binding Rank}"
+                                                   VerticalAlignment="Center"
+                                                   FontSize="10"
+                                                   Foreground="{DynamicResource TextMutedBrush}" />
+                                        <StackPanel Grid.Column="1">
+                                            <Grid>
+                                                <TextBlock Text="{Binding DisplayName}"
+                                                           FontSize="12"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           Foreground="{DynamicResource TextPrimaryBrush}" />
+                                                <TextBlock Text="{Binding CountText}"
+                                                           HorizontalAlignment="Right"
+                                                           FontSize="11"
+                                                           Foreground="{DynamicResource TextSecondaryBrush}" />
+                                            </Grid>
+                                            <!-- RangeBase.Value 的默认绑定模式是 TwoWay，
+                                                 而 Share 是只读计算属性，必须显式指定 OneWay，
+                                                 否则绑定挂载时就会抛 InvalidOperationException 并打崩整个视图。 -->
+                                            <ProgressBar Value="{Binding Share, Mode=OneWay}"
+                                                         Maximum="100"
+                                                         Height="3"
+                                                         Margin="0,2,0,0" />
+                                        </StackPanel>
+                                        <TextBlock Grid.Column="2"
+                                                   Text="{Binding ShareText}"
+                                                   Margin="8,0,0,0"
+                                                   VerticalAlignment="Center"
+                                                   FontSize="10"
+                                                   Foreground="{DynamicResource TextMutedBrush}" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+
+                        <Grid Grid.Row="7" Margin="14,6,14,12">
+                            <TextBlock Text="{Binding SessionInsight.UpdatedText}"
+                                       VerticalAlignment="Center"
+                                       FontSize="10"
+                                       Foreground="{DynamicResource TextMutedBrush}" />
+                            <Button Content="立即扫描"
+                                    HorizontalAlignment="Right"
+                                    Padding="7,2"
+                                    MinWidth="0"
+                                    FontSize="10"
+                                    Command="{Binding SessionInsight.ScanCommand}"
+                                    ToolTip="立即比对全部群的成员名单（首次只建基线）" />
+                        </Grid>
+                    </Grid>
+
+                    <!-- 好友视图 -->
+                    <StackPanel Margin="14,6,14,0"
+                                Visibility="{Binding SessionInsight.IsFriend, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="{Binding SessionInsight.StatsHeader}"
+                                   FontSize="12"
+                                   FontWeight="SemiBold"
+                                   Foreground="{DynamicResource TextSecondaryBrush}" />
+                        <TextBlock Text="{Binding SessionInsight.TotalText}"
+                                   Margin="0,8,0,0"
+                                   FontSize="22"
+                                   FontWeight="SemiBold"
+                                   Foreground="{DynamicResource TextPrimaryBrush}" />
+                        <TextBlock Text="{Binding SessionInsight.FriendSummary}"
+                                   Margin="0,6,0,0"
+                                   FontSize="12"
+                                   Foreground="{DynamicResource TextSecondaryBrush}" />
+                        <TextBlock Text="统计口径：今日 00:00 至现在，含系统消息以外的全部消息"
+                                   Margin="0,10,0,0"
+                                   FontSize="10"
+                                   TextWrapping="Wrap"
+                                   Foreground="{DynamicResource TextMutedBrush}" />
+                        <TextBlock Text="{Binding SessionInsight.UpdatedText}"
+                                   Margin="0,4,0,0"
+                                   FontSize="10"
+                                   Foreground="{DynamicResource TextMutedBrush}" />
+                    </StackPanel>
+
+                    <!-- 未选择会话时的空态 -->
+                    <TextBlock Text="选择左侧会话后，这里显示群成员、进退群记录与今日发言排行"
+                               Margin="14,8,14,0"
+                               VerticalAlignment="Top"
+                               FontSize="11"
+                               TextWrapping="Wrap"
+                               Foreground="{DynamicResource TextMutedBrush}"
+                               Visibility="{Binding SessionInsight.HasNoChat, Converter={StaticResource BoolToVis}}" />
+                </Grid>
+            </Grid>
+        </Border>
+
+        <!-- ==================== 第 3 栏：AI 分析 ====================
              只保留"分析"本身：生成分析 + 四个预设 + AI 对话 + 提问框。
              模型设置 / 自动回复入口在「设置」模块，导出在本模块工具栏。 -->
-        <Border Grid.Column="2"
+        <Border Grid.Column="3"
                 Background="{DynamicResource PanelBrush}"
                 BorderBrush="{DynamicResource LineBrush}"
                 BorderThickness="1,0,0,0">

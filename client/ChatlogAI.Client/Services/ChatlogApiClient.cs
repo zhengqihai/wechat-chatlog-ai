@@ -172,6 +172,100 @@ public sealed class ChatlogApiClient : IDisposable
         return SendAsync<MessageListResponse>(HttpMethod.Get, query.ToString(), null, DefaultTimeout, cancellationToken);
     }
 
+    // ==================== 4.1 群成员与发言统计（C7 / C8） ====================
+
+    /// <summary>GET /api/group/members。依赖本地数据源，上游模式会返回 400。</summary>
+    public Task<GroupMembersResponse> GetGroupMembersAsync(
+        string targetId,
+        CancellationToken cancellationToken = default)
+        => SendAsync<GroupMembersResponse>(
+            HttpMethod.Get,
+            "/api/group/members?target_id=" + Uri.EscapeDataString(targetId),
+            null,
+            DefaultTimeout,
+            cancellationToken);
+
+    /// <summary>GET /api/group/changes。事件时间是"检测到的时间"，不是精确入退群时刻。</summary>
+    public Task<GroupChangesResponse> GetGroupChangesAsync(
+        string targetId,
+        int limit = 50,
+        CancellationToken cancellationToken = default)
+    {
+        var path = new StringBuilder("/api/group/changes?target_id=")
+            .Append(Uri.EscapeDataString(targetId))
+            .Append("&limit=")
+            .Append(limit.ToString(System.Globalization.CultureInfo.InvariantCulture))
+            .ToString();
+        return SendAsync<GroupChangesResponse>(HttpMethod.Get, path, null, DefaultTimeout, cancellationToken);
+    }
+
+    /// <summary>POST /api/group/scan。手动触发一次全量扫描，扫描期间返回 409。</summary>
+    public Task<GroupScanResponse> ScanGroupsAsync(CancellationToken cancellationToken = default)
+        => SendAsync<GroupScanResponse>(
+            HttpMethod.Post, "/api/group/scan", new { }, UpstreamTimeout, cancellationToken);
+
+    public Task<GroupWatchConfigResponse> GetGroupWatchConfigAsync(CancellationToken cancellationToken = default)
+        => SendAsync<GroupWatchConfigResponse>(
+            HttpMethod.Get, "/api/group/watch/config", null, DefaultTimeout, cancellationToken);
+
+    public Task<GroupWatchConfigResponse> SaveGroupWatchConfigAsync(
+        GroupWatchConfigPatch patch,
+        CancellationToken cancellationToken = default)
+        => SendAsync<GroupWatchConfigResponse>(
+            HttpMethod.Post, "/api/group/watch/config", patch, DefaultTimeout, cancellationToken);
+
+    public Task<GroupWatchStatusResponse> GetGroupWatchStatusAsync(CancellationToken cancellationToken = default)
+        => SendAsync<GroupWatchStatusResponse>(
+            HttpMethod.Get, "/api/group/watch/status", null, DefaultTimeout, cancellationToken);
+
+    /// <summary>GET /api/anti-recall/config。防撤回开关现状与可用性。</summary>
+    public Task<AntiRecallConfigResponse> GetAntiRecallConfigAsync(CancellationToken cancellationToken = default)
+        => SendAsync<AntiRecallConfigResponse>(
+            HttpMethod.Get, "/api/anti-recall/config", null, DefaultTimeout, cancellationToken);
+
+    /// <summary>POST /api/anti-recall/config。保存防撤回开关。</summary>
+    public Task<AntiRecallConfigResponse> SaveAntiRecallConfigAsync(
+        AntiRecallConfigPatch patch,
+        CancellationToken cancellationToken = default)
+        => SendAsync<AntiRecallConfigResponse>(
+            HttpMethod.Post, "/api/anti-recall/config", patch, DefaultTimeout, cancellationToken);
+
+    /// <summary>
+    /// POST /api/stats/watch。进入会话时调用：服务端会算「今日 00:00 → 现在」并建立增量游标。
+    /// 首次计算要扫描当天消息，超时按 <see cref="UpstreamTimeout"/> 计。
+    /// </summary>
+    public Task<StatsWatchResponse> StartStatsWatchAsync(
+        string targetId,
+        CancellationToken cancellationToken = default)
+        => SendAsync<StatsWatchResponse>(
+            HttpMethod.Post,
+            "/api/stats/watch",
+            new { target_id = targetId },
+            UpstreamTimeout,
+            cancellationToken);
+
+    /// <summary>GET /api/stats/watch。每分钟轮询，服务端只补游标之后的新消息。</summary>
+    public Task<StatsWatchResponse> GetStatsWatchAsync(
+        string targetId,
+        CancellationToken cancellationToken = default)
+        => SendAsync<StatsWatchResponse>(
+            HttpMethod.Get,
+            "/api/stats/watch?target_id=" + Uri.EscapeDataString(targetId),
+            null,
+            UpstreamTimeout,
+            cancellationToken);
+
+    /// <summary>DELETE /api/stats/watch。离开会话时清掉服务端的内存缓存。</summary>
+    public Task<ApiMessageResponse> StopStatsWatchAsync(
+        string targetId,
+        CancellationToken cancellationToken = default)
+        => SendAsync<ApiMessageResponse>(
+            HttpMethod.Delete,
+            "/api/stats/watch?target_id=" + Uri.EscapeDataString(targetId),
+            null,
+            DefaultTimeout,
+            cancellationToken);
+
     // ==================== 5. AI 分析与历史 ====================
 
     /// <summary>POST /api/summarize。模型调用，超时按 <see cref="ModelTimeout"/> 计。</summary>
@@ -527,6 +621,27 @@ public sealed class ChatlogApiClient : IDisposable
             return (bytes, contentType);
         }
     }
+
+    // ==================== 知识文档（T-F4） ====================
+
+    /// <summary>GET /api/docs。知识文档列表。</summary>
+    public Task<DocListResponse> GetDocsAsync(CancellationToken cancellationToken = default)
+        => SendAsync<DocListResponse>(
+            HttpMethod.Get, "/api/docs", null, DefaultTimeout, cancellationToken);
+
+    /// <summary>POST /api/docs。上传（JSON：filename + content，单文件 ≤4MB）。</summary>
+    public Task<DocUploadResponse> UploadDocAsync(
+        DocUploadRequest request,
+        CancellationToken cancellationToken = default)
+        => SendAsync<DocUploadResponse>(
+            HttpMethod.Post, "/api/docs", request, DefaultTimeout, cancellationToken);
+
+    /// <summary>DELETE /api/docs/{id}。删除文档。</summary>
+    public Task<ApiMessageResponse> DeleteDocAsync(
+        string docId,
+        CancellationToken cancellationToken = default)
+        => SendAsync<ApiMessageResponse>(
+            HttpMethod.Delete, "/api/docs/" + Uri.EscapeDataString(docId), null, DefaultTimeout, cancellationToken);
 
     // ==================== 传输层 ====================
 

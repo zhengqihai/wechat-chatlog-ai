@@ -71,6 +71,9 @@ public sealed class AutoReplyViewModel : ObservableObject
     /// <summary>服务端已保存的守护对象，供候选列表回填勾选态。</summary>
     private IReadOnlyList<GuardTarget> _savedTargets = [];
 
+    /// <summary>知识文档列表（T-F4），供「关联文档」选择器列出可选文档。</summary>
+    private IReadOnlyList<DocItem> _docs = [];
+
     private bool _enabled;
     private string _contextCountText = DefaultContextCount.ToString(CultureInfo.InvariantCulture);
     private string _replyCooldownText = DefaultReplyCooldownSeconds.ToString(CultureInfo.InvariantCulture);
@@ -205,6 +208,9 @@ public sealed class AutoReplyViewModel : ObservableObject
         set => SetProperty(ref _hotkeyHintText, value);
     }
 
+    /// <summary>文档列表（T-F4），供 View 打开「关联文档」选择器时取用。</summary>
+    public IReadOnlyList<DocItem> Docs => _docs;
+
     // ==================== 守护对象 ====================
 
     /// <summary>好友候选（原前端 <c>renderGroup('好友', ...)</c> 那一组）。</summary>
@@ -237,6 +243,7 @@ public sealed class AutoReplyViewModel : ObservableObject
     public async Task InitializeAsync()
     {
         await LoadConfigAsync();
+        await LoadDocsAsync();
 
         // 用户在配置还没回来时就关了窗口：此时 _lifetime 已被 CancelPending() 取消并释放，
         // 再去读 _lifetime.Token 会抛 ObjectDisposedException。必须在"取令牌"之前收手。
@@ -278,6 +285,22 @@ public sealed class AutoReplyViewModel : ObservableObject
         }
 
         NotifyReadyState();
+    }
+
+    /// <summary>加载知识文档列表（T-F4）。失败静默：文档是可选增强，不阻断自动回复配置。</summary>
+    private async Task LoadDocsAsync()
+    {
+        try
+        {
+            _docs = (await _api.GetDocsAsync(_lifetime.Token)).Docs;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (ChatlogApiException)
+        {
+            _docs = [];
+        }
     }
 
     private async Task LoadGuardChatsAsync()
@@ -363,6 +386,7 @@ public sealed class AutoReplyViewModel : ObservableObject
             {
                 item.Prompt = saved.Prompt;
                 item.IsSelected = true;
+                item.SetDocIds(saved.DocIds);
             }
 
             (item.IsGroup ? GroupTargets : FriendTargets).Add(item);

@@ -1,0 +1,105 @@
+<UserControl x:Class="ChatlogAI.Client.Views.Modules.DocsModuleView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             FontFamily="Microsoft YaHei UI, Segoe UI"
+             Foreground="{DynamicResource TextPrimaryBrush}">
+
+    <!-- 文档模块（T-F4）：知识文档的列表 + 上传 + 删除。
+         本控件不设置 DataContext，绑定全部继承 MainWindow 的 MainViewModel（{Binding Docs.Xxx}）。 -->
+
+    <Border Background="{DynamicResource PageBrush}">
+        <Grid Margin="32,32,32,0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <StackPanel Grid.Row="0">
+                <TextBlock Text="文档"
+                           FontSize="18"
+                           FontWeight="SemiBold"
+                           Foreground="{DynamicResource TextPrimaryBrush}" />
+                <TextBlock Margin="0,6,0,0"
+                           FontSize="12"
+                           TextWrapping="Wrap"
+                           Foreground="{DynamicResource TextMutedBrush}"
+                           Text="上传 md / txt / html / json 作为知识文档，可在自动回复与定时发送中按会话/任务关联注入。" />
+                <StackPanel Margin="0,12,0,0"
+                            Orientation="Horizontal">
+                    <Button Padding="12,4"
+                            Content="上传文档"
+                            Click="OnUploadClick" />
+                    <Button Margin="8,0,0,0"
+                            Padding="12,4"
+                            Content="编写文档"
+                            Click="OnNewDocClick" />
+                </StackPanel>
+            </StackPanel>
+
+            <Grid Grid.Row="1" Margin="0,16,0,0">
+                <ListBox ItemsSource="{Binding Docs.Docs}"
+                         Background="Transparent"
+                         BorderThickness="0"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                         HorizontalContentAlignment="Stretch">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <Border Margin="0,0,0,8"
+                                    Padding="12,10"
+                                    CornerRadius="6"
+                                    Background="{DynamicResource CardBrush}"
+                                    BorderBrush="{DynamicResource LineBrush}"
+                                    BorderThickness="1">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding Filename}"
+                                                   FontSize="13"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   Foreground="{DynamicResource TextPrimaryBrush}" />
+                                        <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                            <TextBlock Text="{Binding SizeText}"
+                                                       FontSize="11"
+                                                       Foreground="{DynamicResource TextMutedBrush}" />
+                                            <TextBlock Text="{Binding UploadedAtText}"
+                                                       Margin="8,0,0,0"
+                                                       FontSize="11"
+                                                       Foreground="{DynamicResource TextMutedBrush}" />
+                                        </StackPanel>
+                                    </StackPanel>
+
+                                    <Button Grid.Column="1"
+                                            Margin="12,0,0,0"
+                                            VerticalAlignment="Center"
+                                            Content="删除"
+                                            Padding="10,3"
+                                            Click="OnDeleteDocClick" />
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+
+                <TextBlock Text="{Binding Docs.Placeholder}"
+                           Margin="2,4,0,0"
+                           FontSize="12"
+                           Foreground="{DynamicResource TextMutedBrush}">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding Docs.HasDocs}" Value="False">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+            </Grid>
+        </Grid>
+    </Border>
+</UserControl>

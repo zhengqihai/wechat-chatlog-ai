@@ -1,5 +1,7 @@
+using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Threading;
 using ChatlogAI.Client.Models;
 using ChatlogAI.Client.ViewModels;
@@ -25,6 +27,19 @@ public partial class ChatModuleView : UserControl
 {
     private MainViewModel? _viewModel;
 
+    /// <summary>
+    /// 消息列表是否停在底部。用于「看历史消息时新消息到达不抢滚动」：
+    /// 只有停在底部才随新消息自动滚到底，用户往上翻看历史时不打断。
+    /// 初始 true（刚进入会话默认在底部）。
+    /// </summary>
+    private bool _isAtBottom = true;
+
+    /// <summary>消息列表内部的 ScrollViewer；重建后用它恢复历史滚动偏移。</summary>
+    private ScrollViewer? _messageScrollViewer;
+
+    /// <summary>最近一次「纯滚动」时的垂直偏移，用于重建消息后把用户留在原处。</summary>
+    private double _lastVerticalOffset;
+
     public ChatModuleView()
     {
         InitializeComponent();
@@ -47,6 +62,7 @@ public partial class ChatModuleView : UserControl
         _viewModel = viewModel;
         viewModel.MessagesUpdated += OnMessagesUpdated;
         viewModel.AiThreadUpdated += OnAiThreadUpdated;
+        viewModel.PropertyChanged += OnViewModelPropertyChanged;
     }
 
     /// <summary>
@@ -65,7 +81,20 @@ public partial class ChatModuleView : UserControl
 
         _viewModel.MessagesUpdated -= OnMessagesUpdated;
         _viewModel.AiThreadUpdated -= OnAiThreadUpdated;
+        _viewModel.PropertyChanged -= OnViewModelPropertyChanged;
         _viewModel = null;
+    }
+
+    /// <summary>
+    /// 切换会话时回到「停在底部」状态：不同会话的消息列表是全新内容，
+    /// 沿用上一个会话的滚动位置没有意义，必须让新会话从底部开始显示。
+    /// </summary>
+    private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(MainViewModel.SelectedChat))
+        {
+            _isAtBottom = true;
+        }
     }
 
     private void OnMessagesUpdated()
@@ -84,12 +113,63 @@ public partial class ChatModuleView : UserControl
                 return;
             }
 
-            MessageList.ScrollIntoView(viewModel.Messages[^1]);
+            // 停在底部才自动滚到底；往上翻看历史时恢复原偏移，既不抢到底、也不被拽回顶部。
+            if (_isAtBottom)
+            {
+                MessageList.ScrollIntoView(viewModel.Messages[^1]);
+                return;
+            }
+
+            _messageScrollViewer?.ScrollToVerticalOffset(_lastVerticalOffset);
         }));
+    }
+
+    /// <summary>
+    /// 跟踪消息列表是否停在底部（留 40px 容差，避免"差一点到底"被误判成在翻历史）。
+    /// 由 ScrollChanged 事件驱动，与 <see cref="OnMessagesUpdated"/> 的自动滚动配合。
+    /// </summary>
+    private void OnMessageScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        if (e.OriginalSource is not ScrollViewer viewer)
+        {
+            return;
+        }
+
+        _messageScrollViewer = viewer;
+
+        // 只在「内容高度没变、纯粹是滚动」时更新底部标记。消息列表每 5 秒 Clear/Add 重建，
+        // 重建时 ExtentHeight 会先塌到 0 再撑回来，若把这段也算进去，「是否在底部」会被冲乱，
+        // 于是看历史时新消息到达也会被误判成在底部、抢着滚下去。
+        if (e.ExtentHeightChange != 0)
+        {
+            return;
+        }
+
+        _lastVerticalOffset = viewer.VerticalOffset;
+        _isAtBottom = viewer.VerticalOffset + viewer.ViewportHeight >= viewer.ExtentHeight - 40;
     }
 
     /// <summary>AI 对话是 ScrollViewer + ItemsControl（见 XAML 注释），所以直接滚到底即可。</summary>
     private void OnAiThreadUpdated() => AiThreadScroll.ScrollToEnd();
+
+    /// <summary>
+    /// 点击图片：在缩略图与原图之间切换。缩略图（kind=thumb）体积小、加载快但模糊，
+    /// 原图（kind=orig）清晰但更大；用户点一下看原图，再点一下缩回，不打断消息流。
+    ///
+    /// 切换状态放在 <see cref="MessageItemViewModel"/> 上、由 <c>DisplayImageUrl</c> 驱动绑定，
+    /// 而不是直接给 <c>image.Source</c> 赋本地值：本地值会顶掉 XAML 里的 Source 绑定，
+    /// 遇到 ListBox 虚拟化复用容器时会把上一行的图错挂到下一行，造成「点了没反应 / 图串位」。
+    /// </summary>
+    private void OnImageClick(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not Image image || image.DataContext is not MessageItemViewModel vm)
+        {
+            return;
+        }
+
+        vm.ToggleImage();
+        e.Handled = true;
+    }
 
     /// <summary>
     /// 导出当前会话（原 MainWindow.OnExportClick，逻辑一字未改）。

@@ -47,6 +47,19 @@ public partial class ScheduledSendWindow : Window
 
     private void OnCancelClick(object sender, RoutedEventArgs e) => Close();
 
+    /// <summary>
+    /// 「关联文档」（T-F4）：点开多选器。取消时返回 null，保持原有关联不变。
+    /// 与 AutoReplyWindow 不同，这里只有一个编辑器 VM，直接取 _viewModel，无需按 DataContext 定位行。
+    /// </summary>
+    private void OnPickDocsClick(object sender, RoutedEventArgs e)
+    {
+        var selected = DocPickerWindow.Pick(this, _viewModel.Docs, _viewModel.DocIds);
+        if (selected is not null)
+        {
+            _viewModel.SetDocIds(selected);
+        }
+    }
+
     private void OnAlertRequested(string message)
         => MessageBox.Show(this, message, "Chatlog AI", MessageBoxButton.OK, MessageBoxImage.Warning);
 

@@ -24,6 +24,7 @@ public sealed class GuardTargetItemViewModel : ObservableObject
     private bool _isSelected;
     private bool _isEnabled = true;
     private string _prompt = "";
+    private List<string> _docIds = [];
 
     public GuardTargetItemViewModel(ChatSummary chat, Action? selectionChanged = null)
     {
@@ -86,6 +87,19 @@ public sealed class GuardTargetItemViewModel : ObservableObject
         set => SetProperty(ref _isEnabled, value);
     }
 
+    /// <summary>关联文档按钮的文案：未关联时「关联文档」，已关联时带数量。</summary>
+    public string DocCountText => _docIds.Count == 0 ? "关联文档" : $"关联文档（{_docIds.Count}）";
+
+    /// <summary>当前关联的知识文档 id（只读，改动走 <see cref="SetDocIds"/>）。</summary>
+    public IReadOnlyList<string> DocIds => _docIds;
+
+    /// <summary>文档选择器返回后写入勾选的文档 id，并刷新按钮文案。</summary>
+    public void SetDocIds(IReadOnlyList<string> docIds)
+    {
+        _docIds = docIds.ToList();
+        OnPropertyChanged(nameof(DocCountText));
+    }
+
     /// <summary>构造提交给后端的守护对象；提示词按原前端做 trim。</summary>
     public GuardTarget ToModel() => new()
     {
@@ -93,5 +107,6 @@ public sealed class GuardTargetItemViewModel : ObservableObject
         Name = Name,
         Type = Type,
         Prompt = Prompt.Trim(),
+        DocIds = _docIds,
     };
 }

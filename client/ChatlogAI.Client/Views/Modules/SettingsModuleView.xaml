@@ -69,6 +69,104 @@
                            Foreground="{DynamicResource TextMutedBrush}" />
             </Grid>
 
+            <!-- 群成员扫描（C7）：后端常驻线程负责"启动一次 + 按间隔全量比对"，
+                 这里只改开关/间隔和手动触发。成员快照必须连续采样才可能发现退群。 -->
+            <Grid Margin="0,14,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Column="0"
+                           Text="群成员扫描"
+                           Width="96"
+                           VerticalAlignment="Top"
+                           Margin="0,4,0,0"
+                           FontSize="13"
+                           Foreground="{DynamicResource TextSecondaryBrush}" />
+
+                <StackPanel Grid.Column="1" Margin="12,0,0,0">
+                    <StackPanel Orientation="Horizontal">
+                        <CheckBox Content="自动扫描"
+                                  VerticalAlignment="Center"
+                                  IsChecked="{Binding GroupWatch.Enabled}" />
+                        <TextBlock Text="间隔"
+                                   Margin="14,0,6,0"
+                                   VerticalAlignment="Center"
+                                   FontSize="12"
+                                   Foreground="{DynamicResource TextSecondaryBrush}" />
+                        <TextBox Width="56"
+                                 Text="{Binding GroupWatch.IntervalText, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="分钟，允许 5–1440" />
+                        <TextBlock Text="分钟"
+                                   Margin="6,0,0,0"
+                                   VerticalAlignment="Center"
+                                   FontSize="12"
+                                   Foreground="{DynamicResource TextMutedBrush}" />
+                        <Button Content="保存"
+                                Margin="12,0,0,0"
+                                Padding="10,3"
+                                MinWidth="0"
+                                FontSize="11"
+                                Command="{Binding GroupWatch.SaveCommand}" />
+                        <Button Content="立即扫描"
+                                Margin="8,0,0,0"
+                                Padding="10,3"
+                                MinWidth="0"
+                                FontSize="11"
+                                Command="{Binding GroupWatch.ScanCommand}"
+                                ToolTip="立即比对全部群的成员名单（首次只建基线，不产生事件）" />
+                    </StackPanel>
+                    <TextBlock Text="{Binding GroupWatch.StatusText}"
+                               Margin="0,6,0,0"
+                               FontSize="12"
+                               TextWrapping="Wrap"
+                               Foreground="{DynamicResource TextMutedBrush}" />
+                    <TextBlock Text="{Binding GroupWatch.LastScanText}"
+                               Margin="0,4,0,0"
+                               FontSize="12"
+                               TextWrapping="Wrap"
+                               Foreground="{DynamicResource TextMutedBrush}" />
+                </StackPanel>
+            </Grid>
+
+            <!-- 防撤回（T-F5）：撤回后原文仍留在本地库，检测在打开会话时现算，无需持久化。
+                 IsEnabled 绑定 Available —— 只有 local 数据源可用时才能开。 -->
+            <Grid Margin="0,14,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Column="0"
+                           Text="防撤回"
+                           Width="96"
+                           VerticalAlignment="Top"
+                           Margin="0,4,0,0"
+                           FontSize="13"
+                           Foreground="{DynamicResource TextSecondaryBrush}" />
+
+                <StackPanel Grid.Column="1" Margin="12,0,0,0">
+                    <StackPanel Orientation="Horizontal">
+                        <CheckBox Content="开启防撤回"
+                                  VerticalAlignment="Center"
+                                  IsEnabled="{Binding AntiRecall.Available}"
+                                  IsChecked="{Binding AntiRecall.Enabled}" />
+                        <Button Content="保存"
+                                Margin="12,0,0,0"
+                                Padding="10,3"
+                                MinWidth="0"
+                                FontSize="11"
+                                Command="{Binding AntiRecall.SaveCommand}" />
+                    </StackPanel>
+                    <TextBlock Text="{Binding AntiRecall.StatusText}"
+                               Margin="0,6,0,0"
+                               FontSize="12"
+                               TextWrapping="Wrap"
+                               Foreground="{DynamicResource TextMutedBrush}" />
+                </StackPanel>
+            </Grid>
+
             <!-- 微信账号（T19-B）：只读状态 + 「管理」入口，真正的操作在账号窗口里。
                  这里的正事是把"现在读的是哪个账号"摆在设置里一眼可见的地方（与 rail 头像同一份状态），
                  并在发送被闸门拦住时给出原因——否则用户只会觉得"机器人不回复了"。 -->
@@ -119,6 +217,28 @@
                            Margin="12,0,0,0"
                            VerticalAlignment="Center"
                            Text="重新显示启动时的免责声明"
+                           FontSize="12"
+                           TextWrapping="Wrap"
+                           Foreground="{DynamicResource TextMutedBrush}" />
+            </Grid>
+
+            <!-- 查看运行日志（T-F2）：只读查看 LogDir 下的三个子进程日志，支持导出。 -->
+            <Grid Margin="0,14,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <Button Grid.Column="0"
+                        Content="查看运行日志"
+                        Width="96"
+                        Padding="0,4"
+                        Click="OnShowLogsClick" />
+
+                <TextBlock Grid.Column="1"
+                           Margin="12,0,0,0"
+                           VerticalAlignment="Center"
+                           Text="查看或导出后端与微信服务的运行日志"
                            FontSize="12"
                            TextWrapping="Wrap"
                            Foreground="{DynamicResource TextMutedBrush}" />

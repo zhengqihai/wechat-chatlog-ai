@@ -254,6 +254,13 @@
                            Margin="0,6,0,14"
                            Text="留空则只用内置提示词（先概括最近聊到哪，再据此写一条不突兀的招呼）。" />
 
+                <!-- 关联知识文档（T-F4）：点开多选器，选中的文档内容会注入 system prompt。 -->
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,14">
+                    <Button Content="{Binding DocCountText}"
+                            Padding="10,3"
+                            Click="OnPickDocsClick" />
+                </StackPanel>
+
                 <!-- ==================== 预览 ==================== -->
                 <TextBlock Style="{StaticResource FormLabel}" Text="预览结果" />
                 <TextBox Height="72"

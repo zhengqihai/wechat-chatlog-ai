@@ -30,6 +30,9 @@ public sealed class ChatItemViewModel : ObservableObject
 
     public string TypeText => _model.IsGroup ? "群聊" : "私聊";
 
+    /// <summary>供「会话洞察」列判断展示成员排行还是好友计数，避免再解一次 Name/Type。</summary>
+    public bool IsGroup => _model.IsGroup;
+
     public string Preview => string.IsNullOrEmpty(_model.LastMessage)
         ? TypeText
         : _model.LastMessage;
@@ -59,6 +62,7 @@ public sealed class ChatItemViewModel : ObservableObject
         OnPropertyChanged(nameof(Name));
         OnPropertyChanged(nameof(AvatarText));
         OnPropertyChanged(nameof(TypeText));
+        OnPropertyChanged(nameof(IsGroup));
         OnPropertyChanged(nameof(Preview));
         OnPropertyChanged(nameof(TimeText));
         OnPropertyChanged(nameof(HasUnread));

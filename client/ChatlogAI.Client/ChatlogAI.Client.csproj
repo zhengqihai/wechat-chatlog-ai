@@ -24,6 +24,11 @@
     <Resource Include="Assets\app.ico" />
   </ItemGroup>
 
+  <!-- 版本号单一事实源：AboutWindow 从 VERSION 读，而不是程序集版本。 -->
+  <ItemGroup>
+    <None Include="..\VERSION" Link="VERSION" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="Markdig" Version="1.3.2" />
   </ItemGroup>

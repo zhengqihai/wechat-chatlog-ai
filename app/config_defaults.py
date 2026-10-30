@@ -21,6 +21,8 @@ DEFAULT_CONFIG = {
     # 仍走上游的只剩「媒体本体（图片/语音/视频）」与账号枚举（阻塞于 C6，见 SELFHOST_DATA_PLAN.md）。
     # 本地链路未就绪时 `get_source()` 会自动回退上游，原因经 /api/data-source/status 暴露。
     "data_source": "local",
+    # 防撤回（T-F5）：开启后，打开会话时把好友/群成员撤回的消息标出来并尽量显示原文。
+    "anti_recall_enabled": False,
 }
 
 # config/api-keys.json 的默认内容。

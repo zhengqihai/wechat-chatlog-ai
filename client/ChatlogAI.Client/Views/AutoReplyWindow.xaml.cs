@@ -56,6 +56,23 @@ public partial class AutoReplyWindow : Window
     /// <summary>「取消」：直接关窗，未保存的编辑全部丢弃（与原前端 <c>closeAutoReplyModal()</c> 一致）。</summary>
     private void OnCancelClick(object sender, RoutedEventArgs e) => Close();
 
+    /// <summary>
+    /// 「关联文档」（T-F4）：点开多选器。取消时返回 null，保持该会话原有关联不变。
+    /// </summary>
+    private void OnPickDocsClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: GuardTargetItemViewModel item })
+        {
+            return;
+        }
+
+        var selected = DocPickerWindow.Pick(this, _viewModel.Docs, item.DocIds);
+        if (selected is not null)
+        {
+            item.SetDocIds(selected);
+        }
+    }
+
     private void OnAlertRequested(string message)
         => MessageBox.Show(this, message, "Chatlog AI", MessageBoxButton.OK, MessageBoxImage.Warning);
 

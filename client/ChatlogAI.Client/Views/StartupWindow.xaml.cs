@@ -1,6 +1,8 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.IO;
 using System.Windows;
+using System.Windows.Threading;
 using ChatlogAI.Client.Bootstrap;
 
 namespace ChatlogAI.Client.Views;
@@ -28,10 +30,22 @@ public partial class StartupWindow : Window, IStartupInteraction
 
     private bool _completed;
 
+    /// <summary>启动页要 tail 的子进程日志文件（对应 StartupOrchestrator 里的 stdout 重定向）。</summary>
+    private static readonly string[] LogFileNames = { "chatlog.log", "wechat.log", "wechat-broker.log" };
+
+    /// <summary>每个日志文件已读到的字节偏移，tail 只读增量。</summary>
+    private readonly Dictionary<string, long> _logOffsets = new(StringComparer.OrdinalIgnoreCase);
+
+    private DispatcherTimer? _logTailTimer;
+
+    /// <summary>用户点「确认进入」的信号；App 在此 await 后再 Show 主界面。</summary>
+    private readonly TaskCompletionSource<bool> _enterSource = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     public StartupWindow()
     {
         InitializeComponent();
         Closing += OnClosing;
+        StartLogTail();
     }
 
     /// <summary>启动编排的取消令牌；用户点"退出"或关窗即触发。</summary>
@@ -42,6 +56,17 @@ public partial class StartupWindow : Window, IStartupInteraction
     /// 不再被 <see cref="OnClosing"/> 解读为"用户取消启动"。
     /// </summary>
     public void MarkCompleted() => _completed = true;
+
+    /// <summary>启动完成后调用：显示「确认进入」、隐藏「退出」，等待用户确认后再进主界面。</summary>
+    public void ShowEnterButton()
+    {
+        EnterButton.Visibility = Visibility.Visible;
+        ExitButton.Visibility = Visibility.Collapsed;
+        StatusText.Text = "启动完成。可在下方查看日志，点击「确认进入」进入主界面。";
+    }
+
+    /// <summary>用户点「确认进入」的任务；App 在此 await 之后再 Show 主界面。</summary>
+    public Task EnterTask => _enterSource.Task;
 
     // ---------- IStartupInteraction ----------
 
@@ -135,6 +160,12 @@ public partial class StartupWindow : Window, IStartupInteraction
 
     private void OnConfirmClick(object sender, RoutedEventArgs e) => ResolveConfirm(true);
 
+    private void OnEnterClick(object sender, RoutedEventArgs e)
+    {
+        _enterSource.TrySetResult(true);
+        Close();
+    }
+
     private void OnExitClick(object sender, RoutedEventArgs e)
     {
         AppendLog("已请求退出……");
@@ -150,6 +181,8 @@ public partial class StartupWindow : Window, IStartupInteraction
 
     private void OnClosing(object? sender, CancelEventArgs e)
     {
+        StopLogTail();
+
         if (_completed)
         {
             return;
@@ -193,5 +226,84 @@ public partial class StartupWindow : Window, IStartupInteraction
     {
         LogBox.AppendText($"[{DateTime.Now:HH:mm:ss}] {message}{Environment.NewLine}");
         LogBox.ScrollToEnd();
+    }
+
+    // ---------- 子进程日志 tail ----------
+
+    private void StartLogTail()
+    {
+        _logTailTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+        _logTailTimer.Tick += OnLogTailTick;
+        _logTailTimer.Start();
+        TailLogs();
+    }
+
+    private void StopLogTail()
+    {
+        if (_logTailTimer is null)
+        {
+            return;
+        }
+
+        _logTailTimer.Stop();
+        _logTailTimer.Tick -= OnLogTailTick;
+        _logTailTimer = null;
+    }
+
+    private void OnLogTailTick(object? sender, EventArgs e) => TailLogs();
+
+    private void TailLogs()
+    {
+        foreach (var name in LogFileNames)
+        {
+            TailAppend(AppPaths.Instance.LogFile(name));
+        }
+    }
+
+    /// <summary>
+    /// 读单个日志文件的增量并追加。文件可能还没创建（子进程尚未启动）、或正被写入，
+    /// 这两种情况都静默跳过，等下一轮 tick 再读。
+    /// </summary>
+    private void TailAppend(string path)
+    {
+        try
+        {
+            if (!File.Exists(path))
+            {
+                return;
+            }
+
+            var offset = _logOffsets.TryGetValue(path, out var existing) ? existing : 0;
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            if (offset > stream.Length)
+            {
+                offset = 0;   // 文件被截断/重建，从头读
+            }
+
+            stream.Seek(offset, SeekOrigin.Begin);
+            using var reader = new StreamReader(stream);
+            var text = reader.ReadToEnd();
+            if (text.Length == 0)
+            {
+                return;
+            }
+
+            _logOffsets[path] = stream.Position;
+
+            // 只有日志框停在底部时才自动滚到底，避免用户回看历史时被新日志拽走。
+            var atBottom = LogBox.VerticalOffset + LogBox.ViewportHeight >= LogBox.ExtentHeight - 40;
+            LogBox.AppendText(text);
+            if (atBottom)
+            {
+                LogBox.ScrollToEnd();
+            }
+        }
+        catch (IOException)
+        {
+            // 文件正在被写/被锁，下一轮再读。
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
     }
 }

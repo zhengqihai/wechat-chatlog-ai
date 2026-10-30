@@ -23,6 +23,7 @@ import uvicorn
 
 from adapters import WeChatAdapter
 from config_defaults import DEFAULT_CONFIG, DEFAULT_PROMPTS
+from docs import DocsStore, DocsError
 
 try:
     import automation
@@ -54,6 +55,10 @@ PROMPTS_DIR = CONFIG_DIR / "prompts"
 AUTO_REPLY_DIR = CONFIG_DIR / "auto-reply"
 # 定时发送同样是"按账号隔离的配置"，与 auto-reply 平级，避免与主配置并发写冲突。
 SCHEDULED_SEND_DIR = CONFIG_DIR / "scheduled-send"
+# 知识文档（T-F4）：文件 + index.json 都落在 DataDir/docs 下，与 config/ 同级。
+DOCS_DIR = DATA_ROOT / "docs"
+# 群成员扫描配置（C7）：扫描开关与间隔，同样按账号隔离。
+GROUP_WATCH_DIR = CONFIG_DIR / "group-watch"
 # 运行时会话总结缓存属于数据而非配置，仍留在 data/ 下。
 SUMMARIES_FILE = DATA_ROOT / "data" / "summaries.json"
 # 定时发送的运行时状态（上次发送时刻、抖动后的待触发时刻）属于数据而非配置：
@@ -331,10 +336,40 @@ def _auto_reply_account_key() -> str:
 
 
 def _auto_reply_file_path(account: str) -> Path:
+    return _account_file(AUTO_REPLY_DIR, account)
+
+
+def _account_file(directory: Path, account: str) -> Path:
+    """按账号隔离的配置文件名。非法字符剔除，空则 default。"""
     safe = "".join(ch for ch in account if ch.isalnum() or ch in "-_")
     if not safe:
         safe = "default"
-    return AUTO_REPLY_DIR / (safe + ".json")
+    return directory / (safe + ".json")
+
+
+GROUP_WATCH_DEFAULTS = {
+    "enabled": True,
+    # 群成员快照间隔。全量扫描是一次 contact.db 查询，成本极低；
+    # 但太密没有意义（微信本身也不是秒级刷新成员名单），默认 2 小时。
+    "interval_minutes": 120,
+}
+
+
+def load_group_watch() -> Dict:
+    path = _account_file(GROUP_WATCH_DIR, _auto_reply_account_key())
+    config = dict(GROUP_WATCH_DEFAULTS)
+    config.update(_read_json_file(path))
+    return config
+
+
+def save_group_watch(config: Dict) -> Dict:
+    path = _account_file(GROUP_WATCH_DIR, _auto_reply_account_key())
+    merged = dict(GROUP_WATCH_DEFAULTS)
+    merged.update(config or {})
+    merged["enabled"] = bool(merged.get("enabled"))
+    merged["interval_minutes"] = _clamp_int(merged.get("interval_minutes"), 5, 1440, 120)
+    _write_json_file(path, merged)
+    return merged
 
 
 def _read_json_file(path: Path) -> dict:
@@ -646,7 +681,8 @@ class AutoReplyEngine:
         reply_prompt = str(config.get("reply_prompt") or "").strip()
         inner_prompt = str(target.get("prompt") or "").strip()
         try:
-            reply = generate_reply_text(target_name, messages, context_count, reply_prompt, inner_prompt)
+            reply = generate_reply_text(target_name, messages, context_count, reply_prompt,
+                                        inner_prompt, target.get("doc_ids"))
         except HTTPException as exc:
             self._log("为「%s」生成回复失败：%s" % (target_name, exc.detail), level="error")
             return
@@ -818,6 +854,7 @@ def normalize_scheduled_tasks(value) -> List[Dict]:
             "jitter_minutes": _clamp_int(item.get("jitter_minutes"), 0, 1440, 15),
             "context_count": _clamp_int(item.get("context_count"), 1, 2000, 80),
             "prompt": str(item.get("prompt") or "").strip(),
+            "doc_ids": _clean_doc_ids(item.get("doc_ids")),
         })
 
     if len(cleaned) > SCHEDULED_MAX_TASKS:
@@ -825,8 +862,20 @@ def normalize_scheduled_tasks(value) -> List[Dict]:
     return cleaned
 
 
+def _knowledge_prompt(doc_ids) -> str:
+    """读取关联知识文档并拼成 system 层的一段；缺失文档跳过、累计超 4MB 截断并标注。"""
+    ids = doc_ids or []
+    if not ids:
+        return ""
+    content, truncated = get_docs_store().load_docs_content(ids)
+    if not content:
+        return ""
+    header = "【知识文档（内容可能被截断）】\n" if truncated else "【知识文档】\n"
+    return header + content
+
+
 def generate_greeting_text(target_name: str, messages: List[Dict], context_count: int,
-                           task_prompt: str = "") -> str:
+                           task_prompt: str = "", doc_ids=None) -> str:
     """生成一条主动打招呼的正文（定时发送与预览接口共用）。
 
     与 generate_reply_text 的差别只在"指令"：那边要的是"下一条回复"，
@@ -846,6 +895,9 @@ def generate_greeting_text(target_name: str, messages: List[Dict], context_count
     outer_prompt = load_prompt("scheduled-greeting")
     inner_prompt = str(task_prompt or "").strip()
     system_prompt = "%s\n\n%s" % (outer_prompt, inner_prompt) if inner_prompt else outer_prompt
+    knowledge = _knowledge_prompt(doc_ids)
+    if knowledge:
+        system_prompt = "%s\n\n%s" % (system_prompt, knowledge)
 
     if recent:
         user_content = (
@@ -871,7 +923,8 @@ def _scheduled_generate(task: Dict) -> str:
     target_name = task.get("target_name") or target_id
     context_count = _clamp_int(task.get("context_count"), 1, 2000, 80)
     messages = get_source("chat").list_messages(target_id, limit=context_count)
-    return generate_greeting_text(target_name, messages, context_count, task.get("prompt") or "")
+    return generate_greeting_text(target_name, messages, context_count,
+                                  task.get("prompt") or "", task.get("doc_ids"))
 
 
 def _scheduled_base_due(task: Dict, last_sent: Optional[float], now: float) -> Optional[float]:
@@ -1167,6 +1220,254 @@ def get_source(capability: str):
     return get_wechat_adapter()
 
 
+# ==================== 群成员扫描（C7） ====================
+
+def _group_service_or_none():
+    """群成员 / 发言统计所需的本地服务；不可用返回 None（不抛，供后台线程使用）。"""
+    if not LOCALDB_AVAILABLE or data_source_mode() != "local":
+        return None
+    service = get_local_service()
+    if service is None or not service.ready:
+        return None
+    return service
+
+
+def _require_group_service():
+    """接口层取本地服务：不可用时给出**可操作**的原因，而不是空列表。"""
+    if not LOCALDB_AVAILABLE:
+        raise HTTPException(status_code=400, detail="自研数据链路不可用（依赖缺失），无法读取群成员")
+    if data_source_mode() != "local":
+        raise HTTPException(
+            status_code=400,
+            detail="群成员与发言统计依赖自研本地数据源（local），当前数据来源为 upstream",
+        )
+    service = get_local_service()
+    if service is None or not service.ready:
+        detail = ""
+        if service is not None:
+            detail = str(service.status().get("initError") or "")
+        raise HTTPException(status_code=503, detail="本地数据链路未就绪：%s" % (detail or "请稍后重试"))
+    return service
+
+
+class GroupWatchEngine:
+    """群成员快照后台引擎：启动一次 → 按配置间隔（默认 2 小时）→ 手动触发。
+
+    它只做"采样"，不做任何消息统计；统计是请求驱动的（见 /api/stats/watch）。
+    """
+
+    POLL_INTERVAL = 30.0
+    RETRY_SECONDS = 300.0
+
+    def __init__(self):
+        self._thread = None
+        self._stop_event = threading.Event()
+        self._scan_lock = threading.Lock()
+        self._last_scan_at = 0.0
+        self._retry_at = 0.0
+        self._last_summary: Dict = {}
+        self._last_error = ""
+        self.log = deque(maxlen=100)
+
+    def _log(self, message: str, level: str = "info") -> None:
+        self.log.append({
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "level": level,
+            "message": message,
+        })
+
+    def is_running(self) -> bool:
+        return bool(self._thread and self._thread.is_alive())
+
+    def start(self) -> None:
+        if self.is_running():
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._run, name="group-watch-engine", daemon=True)
+        self._thread.start()
+        self._log("群成员扫描引擎已启动")
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def _run(self) -> None:
+        # 启动立即跑一次（产品要求：进入程序时检测一次）。
+        self._tick(force=True)
+        while not self._stop_event.is_set():
+            self._stop_event.wait(self.POLL_INTERVAL)
+            if not self._stop_event.is_set():
+                self._tick()
+
+    def _tick(self, force: bool = False) -> None:
+        config = load_group_watch()
+        if not config.get("enabled"):
+            return
+        now = time.time()
+        if now < self._retry_at:
+            return
+        interval = _clamp_int(config.get("interval_minutes"), 5, 1440, 120) * 60
+        if not force and self._last_scan_at and now - self._last_scan_at < interval:
+            return
+        self.scan_now(source="auto")
+
+    def scan_now(self, source: str = "manual") -> Dict:
+        """执行一次全量扫描。重入时直接返回 busy，不排队（避免手动点连点堆积）。"""
+        if not self._scan_lock.acquire(blocking=False):
+            return {"status": "busy", "message": "正在扫描中，请稍后"}
+        try:
+            service = _group_service_or_none()
+            if service is None:
+                self._last_error = "本地数据源未就绪（data_source 需为 local 且镜像已建立）"
+                self._retry_at = time.time() + self.RETRY_SECONDS
+                self._log(self._last_error, level="error")
+                return {"status": "error", "message": self._last_error}
+
+            summary = service.scan_groups()
+            self._last_summary = summary
+            self._last_scan_at = time.time()
+            self._retry_at = 0.0
+            self._last_error = ""
+            self._log(
+                "扫描完成（%s）：%d 个群，新增 %d，退群 %d"
+                % (source, summary.get("groups", 0), summary.get("joined", 0), summary.get("left", 0))
+            )
+            payload = dict(summary)
+            payload["status"] = "success"
+            return payload
+        except Exception as exc:
+            self._last_error = "%s: %s" % (type(exc).__name__, exc)
+            self._retry_at = time.time() + self.RETRY_SECONDS
+            self._log("扫描失败：%s" % self._last_error, level="error")
+            return {"status": "error", "message": self._last_error}
+        finally:
+            self._scan_lock.release()
+
+    def status(self) -> Dict:
+        return {
+            "running": self.is_running(),
+            "last_scan_at": self._last_scan_at or None,
+            "last_error": self._last_error,
+            "last_summary": self._last_summary,
+            "log": list(self.log),
+        }
+
+
+_group_watch_engine = GroupWatchEngine()
+
+
+# ==================== 发言统计（C8，请求驱动） ====================
+#
+# 为什么不做后台定时统计：统计只服务"当前打开的会话"，由客户端在进入会话时
+# POST /api/stats/watch 启动；之后每分钟 GET 一次做增量。没有客户端在看时不做无用功。
+# 缓存只放内存（按 target_id + 当天），后端重启后重新进入会话会重算一次当天数据。
+
+STATS_TOP_LIMIT = 20
+STATS_WATCH_CAPACITY = 8          # 用户来回切换会话时，保留最近 8 个的增量进度
+_STATS_WATCHES: Dict[str, Dict] = {}
+_STATS_WATCH_LOCK = threading.RLock()
+
+
+def _day_start_epoch(now: Optional[float] = None) -> float:
+    moment = datetime.fromtimestamp(now if now is not None else time.time())
+    return moment.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
+
+def _stats_watch_refresh(session: Dict, service, now: Optional[float] = None) -> None:
+    """把游标之后的新消息累加进会话。跨天自动清空重算。"""
+    now = now if now is not None else time.time()
+    today = datetime.fromtimestamp(now).strftime("%Y-%m-%d")
+    if session.get("date") != today:
+        session.update({
+            "date": today,
+            "window_start_ts": _day_start_epoch(now),
+            "counts": {},
+            "total": 0,
+            "cursor": [],
+            "started_at": now,
+            "scanned": 0,
+        })
+
+    result = service.collect_message_stats(
+        session["target_id"],
+        session["window_start_ts"],
+        None,
+        session.get("cursor") or None,
+    )
+    counts = session.setdefault("counts", {})
+    for key, value in (result.get("counts") or {}).items():
+        counts[key] = counts.get(key, 0) + int(value)
+    session["total"] = int(session.get("total") or 0) + int(result.get("total") or 0)
+    session["cursor"] = result.get("cursor") or session.get("cursor") or []
+    session["scanned"] = int(session.get("scanned") or 0) + int(result.get("scanned") or 0)
+    session["updated_at"] = now
+
+
+def _stats_watch_payload(session: Dict, service) -> Dict:
+    counts = session.get("counts") or {}
+    names = service.resolve_display_names(list(counts)) if counts else {}
+    total = int(session.get("total") or 0)
+
+    items = []
+    for key, count in counts.items():
+        items.append({
+            "username": "" if key == "__unknown__" else key,
+            "displayName": names.get(key) or key,
+            "count": int(count),
+            "share": round(int(count) * 100.0 / total, 1) if total else 0.0,
+        })
+    items.sort(key=lambda item: (-item["count"], item["displayName"]))
+
+    me = counts.get(str(getattr(service, "self_wxid", "") or ""), 0)
+    return {
+        "target_id": session["target_id"],
+        "type": "group" if str(session["target_id"]).endswith("@chatroom") else "friend",
+        "date": session.get("date"),
+        "window_start": datetime.fromtimestamp(
+            float(session.get("window_start_ts") or 0)).strftime("%Y-%m-%d %H:%M:%S"),
+        "started_at": session.get("started_at"),
+        "updated_at": session.get("updated_at"),
+        "total": total,
+        "me_count": me,
+        "other_count": max(0, total - me),
+        "member_count": len(items),
+        "members": items[:STATS_TOP_LIMIT],
+    }
+
+
+def _stats_watch_start(target_id: str, service) -> Dict:
+    target_id = str(target_id or "").strip()
+    if not target_id:
+        raise HTTPException(status_code=400, detail="缺少 target_id")
+    now = time.time()
+    today = datetime.fromtimestamp(now).strftime("%Y-%m-%d")
+    with _STATS_WATCH_LOCK:
+        session = _STATS_WATCHES.get(target_id)
+        if session is None or session.get("date") != today:
+            session = {
+                "target_id": target_id,
+                "date": today,
+                "window_start_ts": _day_start_epoch(now),
+                "started_at": now,
+                "updated_at": now,
+                "counts": {},
+                "total": 0,
+                "cursor": [],
+                "scanned": 0,
+            }
+            _STATS_WATCHES[target_id] = session
+
+        _stats_watch_refresh(session, service, now)
+
+        # 简单 LRU：只保留最近 8 个会话的增量进度，避免长时间使用后无限增长。
+        if len(_STATS_WATCHES) > STATS_WATCH_CAPACITY:
+            stale = sorted(_STATS_WATCHES.items(),
+                           key=lambda item: float(item[1].get("updated_at") or 0))
+            for key, _value in stale[:len(_STATS_WATCHES) - STATS_WATCH_CAPACITY]:
+                _STATS_WATCHES.pop(key, None)
+
+        return _stats_watch_payload(session, service)
+
+
 def _reset_wechat_adapters() -> None:
     """清掉全部数据源缓存：模块级上游适配器、自动回复引擎的引用、本地服务。
 
@@ -1264,6 +1565,15 @@ def get_real_wechat_messages(target_id: str, limit: int = 50) -> List[Dict]:
     return get_source("chat").list_messages(target_id, limit)
 
 
+def _fetch_messages(target_id: str, limit: int) -> List[Dict]:
+    """读会话消息；local 模式且开启防撤回时走带撤回标注的路径，其余走通用路径。"""
+    if bool(load_config().get("anti_recall_enabled")) and data_source_mode() == "local":
+        service = get_local_service()
+        if service is not None and service.ready:
+            return service.list_messages(target_id, limit, annotate_recalls=True)
+    return get_real_wechat_messages(target_id, limit)
+
+
 # 只放行图片：本轮修复范围就是图片，其余媒体类型（表情/视频/语音/文件）不在内。
 
 
@@ -1277,6 +1587,21 @@ def image_proxy_path(target_id: str, md5: str = "", file_id: str = "") -> str:
     return "/api/media/image?%s" % urllib.parse.urlencode(params)
 
 
+def image_local_proxy_path(target_id: str, image_hash: str, create_time: int,
+                           kind: str = "thumb") -> str:
+    """本地图片代理的相对路径（C6：按图片 hash 定位并解密）。
+
+    `kind`：thumb=缩略图（聊天框默认）、orig=原图、hd=高清。原图/HD 用于点击放大查看。
+    """
+    params = {
+        "target_id": target_id,
+        "image_hash": image_hash,
+        "create_time": str(int(create_time)),
+        "kind": kind,
+    }
+    return "/api/media/image/local?%s" % urllib.parse.urlencode(params)
+
+
 def absolute_self_url(path: str) -> str:
     """把相对路径补成指向本服务自身的绝对地址（供客户端直接绑定/下载）。"""
     port = int(load_config().get("port") or 18765)
@@ -1288,15 +1613,44 @@ def with_image_url(message: Dict, target_id: str) -> Dict:
 
     刻意不改动 content：正文仍保留 [图] 之类的标签，因为 content 会流进 /api/summarize
     送给大模型，塞进图片 URL 会污染 AI 总结的输入。
+
+    本地模式下图片定位走 `image_hash`（32 位 hex，来自 packed_info_data，见 C6 调研报告），
+    不依赖 image_md5 / image_file_id（那两字段是上游适配器的定位参数）。
     """
     if str(message.get("message_type") or "") != "image":
         return message
+    if data_source_mode() == "local":
+        image_hash = str(message.get("image_hash") or "")
+        create_time = message.get("timestamp")
+        if not image_hash or create_time is None:
+            return message
+        item = dict(message)
+        item["image_url"] = absolute_self_url(
+            image_local_proxy_path(target_id, image_hash, int(create_time)))
+        return item
     md5 = str(message.get("image_md5") or "")
     file_id = str(message.get("image_file_id") or "")
     if not md5 and not file_id:
         return message
     item = dict(message)
     item["image_url"] = absolute_self_url(image_proxy_path(target_id, md5, file_id))
+    return item
+
+
+def with_recalled_image_url(message: Dict, target_id: str) -> Dict:
+    """给「撤回提示」补上被撤回图片的可访问地址（T-F5）。
+
+    撤回提示本身是 system 消息，不经过 with_image_url；被撤回图片的定位信息
+    （image_hash + 原消息 create_time）由 RecallBackup 恢复后挂在 recalled_image_* 字段上，
+    这里把它们转成本服务代理地址，客户端才能真的把图片显示出来。
+    """
+    image_hash = str(message.get("recalled_image_hash") or "")
+    create_time = message.get("recalled_image_time")
+    if not image_hash or create_time is None:
+        return message
+    item = dict(message)
+    item["recalled_image_url"] = absolute_self_url(
+        image_local_proxy_path(target_id, image_hash, int(create_time)))
     return item
 
 
@@ -1456,9 +1810,10 @@ async def get_messages_api(
     recent_count: Optional[int] = Query(None)
 ):
     try:
-        msgs = get_real_wechat_messages(target_id, limit)
+        msgs = _fetch_messages(target_id, limit)
         msgs = filter_messages(msgs, recent_hours, recent_count)
         msgs = [with_image_url(item, target_id) for item in msgs]
+        msgs = [with_recalled_image_url(item, target_id) for item in msgs]
         return {
             "status": "success",
             "messages": msgs,
@@ -1643,6 +1998,86 @@ async def get_media_image_api(
         # 图片按 md5 寻址、内容不可变，可放心让调用方缓存一天。
         headers={"Cache-Control": "private, max-age=86400"},
     )
+
+
+@app.get("/api/media/image/local")
+async def get_local_image_api(
+    target_id: str,
+    image_hash: str,
+    create_time: int,
+    kind: str = Query("thumb"),
+):
+    """本地图片代理（C6）：按图片 hash 定位并解密返回。
+
+    `kind`：thumb（缩略图，默认）/ orig（原图）/ hd（高清）。
+    仅本地数据源使用；参数由 `with_image_url` 拼装，不接受任意路径/URL。
+    """
+    service = get_local_service()
+    if service is None or not service.ready:
+        raise HTTPException(status_code=503, detail="本地数据链路未就绪")
+    try:
+        content, content_type = service.fetch_image(target_id, image_hash, create_time, kind)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    return Response(
+        content=content,
+        media_type=content_type,
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
+
+
+# ==================== 知识文档（T-F4） ====================
+
+_docs_store = None
+
+
+def get_docs_store() -> DocsStore:
+    """知识文档存储单例。首次访问时创建 docs 目录。"""
+    global _docs_store
+    if _docs_store is None:
+        _docs_store = DocsStore(str(DOCS_DIR))
+    return _docs_store
+
+
+@app.get("/api/docs")
+async def list_docs_api():
+    try:
+        items = get_docs_store().list()
+    except DocsError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"status": "success", "docs": items}
+
+
+@app.post("/api/docs")
+async def upload_doc_api(data: dict = Body(...)):
+    filename = str(data.get("filename") or "").strip()
+    content = str(data.get("content") or "")
+    overwrite = bool(data.get("overwrite"))
+    if not filename:
+        raise HTTPException(status_code=400, detail="缺少 filename")
+    try:
+        item = get_docs_store().create(filename, content, overwrite=overwrite)
+    except DocsError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"status": "success", "doc": item}
+
+
+@app.get("/api/docs/{doc_id}")
+async def read_doc_api(doc_id: str):
+    try:
+        content, filename = get_docs_store().read(doc_id)
+    except DocsError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return {"status": "success", "id": doc_id, "filename": filename, "content": content}
+
+
+@app.delete("/api/docs/{doc_id}")
+async def delete_doc_api(doc_id: str):
+    try:
+        get_docs_store().delete(doc_id)
+    except DocsError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return {"status": "success"}
 
 
 # ==================== 通讯录代理（T21 需求 5） ====================
@@ -2049,12 +2484,13 @@ def _model_completion(messages: List[Dict], temperature: float = 0.7) -> str:
 
 
 def generate_reply_text(target_name: str, messages: List[Dict], context_count: int,
-                        reply_prompt: str, inner_prompt: str = "") -> str:
+                        reply_prompt: str, inner_prompt: str = "", doc_ids=None) -> str:
     """根据上下文生成下一条回复正文（自动回复引擎与测试接口共用）。
 
     回复提示词固定为两层：
     - 外层 reply_prompt：全局主体/身份，为空时用默认身份。
     - 内层 inner_prompt：单个会话的精细化口吻，为空时用默认指令。
+    知识文档（doc_ids）注入 system 层，作为身份/知识背景，不与"本次要求"混进 user 层。
     """
     recent = messages[-context_count:] if messages else []
     text_lines = []
@@ -2071,6 +2507,9 @@ def generate_reply_text(target_name: str, messages: List[Dict], context_count: i
     outer_prompt = str(reply_prompt or "").strip() or default_outer
     inner_prompt = str(inner_prompt or "").strip() or default_inner
     system_prompt = "%s\n\n%s" % (outer_prompt, inner_prompt)
+    knowledge = _knowledge_prompt(doc_ids)
+    if knowledge:
+        system_prompt = "%s\n\n%s" % (system_prompt, knowledge)
 
     user_content = (
         "对话对象：%s\n最近 %d 条消息：\n%s\n\n请直接给出下一条回复：" %
@@ -2112,6 +2551,21 @@ GUARD_MAX_FRIENDS = 8
 GUARD_MAX_GROUPS = 3
 
 
+def _clean_doc_ids(value) -> List[str]:
+    """doc_ids 只保留非空字符串并去重；合法性由读取文档时再校验。"""
+    if not isinstance(value, list):
+        return []
+    seen = set()
+    cleaned = []
+    for item in value:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        cleaned.append(text)
+    return cleaned
+
+
 def normalize_guard_targets(value) -> List[Dict]:
     """校验并去重守护会话，限制最多 8 个好友 + 3 个群聊。"""
     if not isinstance(value, list):
@@ -2130,7 +2584,9 @@ def normalize_guard_targets(value) -> List[Dict]:
             continue
         seen_ids.add(target_id)
         prompt = str(item.get("prompt") or "").strip()
-        cleaned.append({"id": target_id, "name": name, "type": kind, "prompt": prompt})
+        doc_ids = _clean_doc_ids(item.get("doc_ids"))
+        cleaned.append({"id": target_id, "name": name, "type": kind, "prompt": prompt,
+                        "doc_ids": doc_ids})
     friends = sum(1 for target in cleaned if target["type"] == "friend")
     groups = sum(1 for target in cleaned if target["type"] == "group")
     if friends > GUARD_MAX_FRIENDS or groups > GUARD_MAX_GROUPS:
@@ -2208,6 +2664,141 @@ async def auto_reply_test_api(data: dict = Body(...)):
     except Exception as exc:
         raise HTTPException(status_code=500, detail="测试失败：%s" % exc) from exc
     raise HTTPException(status_code=400, detail="未知测试动作：%s" % action)
+
+
+# ==================== 群成员与发言统计（C7 / C8） ====================
+
+@app.get("/api/group/members")
+def group_members_api(target_id: str = Query(...)):
+    """某个群的当前成员名单（实时名单 + 快照里的首次观测时间）。"""
+    service = _require_group_service()
+    try:
+        result = service.list_group_members(target_id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    for member in result.get("members") or []:
+        username = str(member.get("username") or "")
+        member["avatar"] = absolute_self_url(contact_avatar_path(username)) if username else ""
+    return {"status": "success", **result}
+
+
+@app.get("/api/group/changes")
+def group_changes_api(target_id: str = Query(...), limit: int = Query(50, ge=1, le=200)):
+    """某个群最近的入群 / 退群事件（新的在前）。"""
+    service = _require_group_service()
+    try:
+        changes = service.group_changes(target_id, limit)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    return {"status": "success", "target_id": target_id, "changes": changes}
+
+
+@app.post("/api/group/scan")
+def group_scan_api():
+    """手动触发一次全量群成员扫描。"""
+    _require_group_service()
+    result = _group_watch_engine.scan_now(source="manual")
+    if result.get("status") == "busy":
+        raise HTTPException(status_code=409, detail=result.get("message") or "正在扫描中")
+    if result.get("status") == "error":
+        raise HTTPException(status_code=503, detail=result.get("message") or "扫描失败")
+    return result
+
+
+@app.get("/api/group/watch/config")
+def get_group_watch_config_api():
+    config = load_group_watch()
+    return {
+        "status": "success",
+        "config": config,
+        "available": _group_service_or_none() is not None,
+    }
+
+
+@app.post("/api/group/watch/config")
+async def save_group_watch_config_api(data: dict = Body(...)):
+    patch = {key: data.get(key) for key in ("enabled", "interval_minutes") if key in data}
+    config = save_group_watch(patch)
+    return {"status": "success", "config": config}
+
+
+@app.get("/api/group/watch/status")
+def get_group_watch_status_api():
+    info = _group_watch_engine.status()
+    return {
+        "status": "success",
+        "enabled": bool(load_group_watch().get("enabled")),
+        "available": _group_service_or_none() is not None,
+        **info,
+    }
+
+
+# ==================== 防撤回（T-F5） ====================
+
+@app.get("/api/anti-recall/config")
+def get_anti_recall_config_api():
+    config = load_config()
+    return {
+        "status": "success",
+        "enabled": bool(config.get("anti_recall_enabled")),
+        # 防撤回依赖本地链路读 system 消息的原文 XML，上游模式给不了，因此只有 local 可用。
+        "available": LOCALDB_AVAILABLE and data_source_mode() == "local",
+    }
+
+
+@app.post("/api/anti-recall/config")
+async def save_anti_recall_config_api(data: dict = Body(...)):
+    enabled = bool(data.get("enabled"))
+    config = load_config()
+    config["anti_recall_enabled"] = enabled
+    save_config(config)
+    return {"status": "success", "enabled": enabled,
+            "available": LOCALDB_AVAILABLE and data_source_mode() == "local"}
+
+
+@app.post("/api/stats/watch")
+def stats_watch_start_api(data: dict = Body(...)):
+    """进入会话时调用：算「今日 00:00 → 现在」的发言排行，并建立增量游标。"""
+    target_id = str(data.get("target_id") or "").strip()
+    if not target_id:
+        raise HTTPException(status_code=400, detail="缺少 target_id")
+    service = _require_group_service()
+    try:
+        payload = _stats_watch_start(target_id, service)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="统计失败：%s" % exc)
+    return {"status": "success", **payload}
+
+
+@app.get("/api/stats/watch")
+def stats_watch_get_api(target_id: str = Query(...)):
+    """每分钟轮询：只扫游标之后的新消息并累加。
+
+    没有会话时自动建立（等价于刚进入），因此客户端即使漏掉 POST 也能自愈。
+    """
+    service = _require_group_service()
+    try:
+        payload = _stats_watch_start(target_id, service)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="统计失败：%s" % exc)
+    return {"status": "success", **payload}
+
+
+@app.delete("/api/stats/watch")
+def stats_watch_stop_api(target_id: str = Query(...)):
+    """离开会话时调用。只清内存缓存，不落盘。"""
+    with _STATS_WATCH_LOCK:
+        _STATS_WATCHES.pop(str(target_id or "").strip(), None)
+    return {"status": "success"}
+
 
 
 # 快捷键自动识别的探测源列表。
@@ -2576,6 +3167,8 @@ def main():
     print(f"==================================================")
     _auto_reply_engine.start()
     _scheduled_send_engine.start()
+    # 群成员扫描：线程内先立刻扫一次（首次只建基线），之后按配置间隔轮询。
+    _group_watch_engine.start()
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
 
 

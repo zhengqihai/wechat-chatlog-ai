@@ -79,6 +79,13 @@
                         Margin="8,0,0,0"
                         Visibility="Collapsed"
                         Click="OnConfirmClick" />
+                <Button x:Name="EnterButton"
+                        Content="确认进入"
+                        Style="{StaticResource PrimaryButton}"
+                        MinWidth="92"
+                        Margin="8,0,0,0"
+                        Visibility="Collapsed"
+                        Click="OnEnterClick" />
                 <Button x:Name="ExitButton"
                         Content="退出"
                         MinWidth="92"

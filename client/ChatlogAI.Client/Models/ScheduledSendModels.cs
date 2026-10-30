@@ -48,6 +48,9 @@ public sealed record ScheduledSendTask
     /// <summary>该任务专属提示词，为空时只用内置的 scheduled-greeting。</summary>
     [JsonPropertyName("prompt")] public string Prompt { get; init; } = "";
 
+    /// <summary>关联的知识文档 id 列表（T-F4，每任务独立）。</summary>
+    [JsonPropertyName("doc_ids")] public IReadOnlyList<string> DocIds { get; init; } = [];
+
     [JsonIgnore] public bool IsGroup => string.Equals(TargetType, "group", StringComparison.OrdinalIgnoreCase);
 }
 

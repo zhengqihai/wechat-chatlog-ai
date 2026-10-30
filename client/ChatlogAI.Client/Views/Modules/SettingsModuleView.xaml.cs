@@ -67,6 +67,20 @@ public partial class SettingsModuleView : UserControl
     }
 
     /// <summary>
+    /// 「查看运行日志」（T-F2）。纯只读 + 导出，不需要 MainViewModel；
+    /// 入口做成 LogViewerWindow 自己的静态方法，这里只传 Owner。
+    /// </summary>
+    private void OnShowLogsClick(object sender, RoutedEventArgs e)
+    {
+        if (Window.GetWindow(this) is not { } owner)
+        {
+            return;
+        }
+
+        LogViewerWindow.Show(owner);
+    }
+
+    /// <summary>
     /// 「关于」。与免责声明一样是纯告知，不需要 MainViewModel；
     /// 入口做成 AboutWindow 自己的静态方法（判据与开窗方式只留一份），这里只传 Owner。
     /// </summary>

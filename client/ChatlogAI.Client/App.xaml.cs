@@ -143,20 +143,24 @@ public partial class App : Application
             return;
         }
 
-        // 阶段 5：交棒给主界面。必须先 Show 新窗口再关旧窗口——
-        // 中间任何一刻"零窗口"都可能影响关闭语义与任务栏图标。
+        // 阶段 5：交棒给主界面。主窗口先建好但不 Show，让用户停在启动页查看日志，
+        // 点「确认进入」后再 Show（T-F1：查看日志不被阻断、必须确认才进主界面）。
         _apiClient = new ChatlogApiClient();
         _mainViewModel = new MainViewModel(_apiClient);
 
         _mainWindow = new MainWindow(_mainViewModel);
         _mainWindow.ExitRequested += () => _ = RequestExitAsync();
         MainWindow = _mainWindow;
+
+        _startupWindow.MarkCompleted();
+        _startupWindow.ShowEnterButton();
+        await _startupWindow.EnterTask.ConfigureAwait(true);
+
         _mainWindow.Show();
 
         // T17：免责声明要等主窗口首帧渲染之后再弹，理由见 OnMainWindowFirstFrame。
         _mainWindow.ContentRendered += OnMainWindowFirstFrame;
 
-        _startupWindow.MarkCompleted();
         _startupWindow.Close();
         _startupWindow = null;
 

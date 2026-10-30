@@ -171,6 +171,15 @@
                          Text="{Binding Prompt, UpdateSourceTrigger=PropertyChanged}"
                          Visibility="{Binding IsPromptVisible, Converter={StaticResource BoolToVis}}"
                          ToolTip="单独提示词（可选，留空用默认）" />
+
+                <!-- 关联知识文档（T-F4）：勾选后才出现，点开多选器。 -->
+                <Button Margin="24,4,0,2"
+                        HorizontalAlignment="Left"
+                        Padding="8,2"
+                        FontSize="11"
+                        Content="{Binding DocCountText}"
+                        Click="OnPickDocsClick"
+                        Visibility="{Binding IsPromptVisible, Converter={StaticResource BoolToVis}}" />
             </StackPanel>
         </DataTemplate>
     </Window.Resources>
