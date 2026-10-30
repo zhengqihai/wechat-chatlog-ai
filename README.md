@@ -50,7 +50,7 @@ Sensitive data (database keys, chat caches, logs, model API keys) is stored unde
 ## Installation
 
 1. Install and log in to WeChat, and make sure the machine already has chat history.
-2. Download `ChatlogAI-Setup-<version>.exe` and run it. Choose the install location and, optionally, a desktop shortcut.
+2. Download the latest installer (`ChatlogAI-Setup-<version>.exe`) from the [Releases page](https://github.com/zhengqihai/wechat-chatlog-ai/releases) and run it. Choose the install location and, optionally, a desktop shortcut.
 3. Launch **Chatlog AI** from the Start menu or desktop shortcut. Reading WeChat data requires administrator rights; run the app as administrator.
 4. On first run, import the database key (below) and configure a model provider + API key.
 
