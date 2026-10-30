@@ -1,0 +1,1 @@
+const i=r=>{const t=Number(r);return!Number.isFinite(t)||t<0?0:t>1?1:t},a=(r,t)=>{const n=Number(r)||0,e=Number(t)||0;if(!(n>0)||!(e>0))return"rgba(0,0,0,0.05)";const o=i(Math.sqrt(n/e)),s=145-50*o,u=70,c=92-42*o;return`hsl(${s.toFixed(1)} ${u}% ${c.toFixed(1)}%)`};export{a as h};

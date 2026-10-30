@@ -98,13 +98,10 @@ public sealed class ConfigBootstrapper
     }
 
     /// <summary>
-    /// 校验**我们自己**的运行文件是否齐全（等价 require_paths()：缺少时抛出可读异常，不做静默降级）。
+    /// 校验运行文件是否齐全（等价 require_paths()：缺少时抛出可读异常，不做静默降级）。
     ///
-    /// 刻意**不含**上游的 `wechat-backend.exe` 与 `resources\ui`（阶段 D3）：
-    /// 自研链路 C1–C5 已接管会话/消息、通讯录+头像、朋友圈时间线+用户、朋友圈导出，
-    /// 上游只剩「媒体本体」与账号枚举，且它当前拿不到 lease。
-    /// 把上游列进必需项，会让"删掉上游"直接变成"程序起不来"——
-    /// 这正是 §6 里"移除前必须先拆依赖"要防的事。
+    /// 上游 `wechat-backend.exe` 与 `resources\ui` 已恢复为必需项：授权页（10392）依赖它们，
+    /// 缺失会让"首次进入拿不到 db_key"却无提示。列入必需项可保证缺失时立即报错。
     /// </summary>
     public void RequirePaths()
     {
@@ -113,6 +110,8 @@ public sealed class ConfigBootstrapper
             _paths.PythonExe,
             _paths.ServerScript,
             _paths.ConfigFile,
+            _paths.WechatBackendExe,
+            _paths.WechatUiDir,
         };
 
         var missing = required.Where(path => !File.Exists(path) && !Directory.Exists(path)).ToList();

@@ -1,0 +1,1 @@
+const e="decrypt.wechatInstallPath",n=t=>String(t||"").trim(),r=()=>{if(typeof window>"u")return"";try{return n(window.localStorage.getItem(e)||"")}catch{return""}},o=t=>{if(!(typeof window>"u"))try{const a=n(t);a?window.localStorage.setItem(e,a):window.localStorage.removeItem(e)}catch{}};export{n,r,o as w};

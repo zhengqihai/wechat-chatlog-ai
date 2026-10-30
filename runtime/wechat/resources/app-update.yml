@@ -1,0 +1,7 @@
+owner: LifeArchiveProject
+repo: WeChatDataAnalysis
+provider: github
+releaseType: release
+updaterCacheDirName: wechat-data-analysis-desktop-updater
+publisherName:
+  - WDA Private PKI

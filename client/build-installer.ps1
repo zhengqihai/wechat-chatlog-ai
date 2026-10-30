@@ -463,16 +463,17 @@ Write-Step '校验运行文件完整性'
 # 与 Bootstrap\ConfigBootstrapper.RequirePaths() 的必需项**逐项对齐**（两边改动必须同步）。
 # config.json 不在其列：它由程序首次运行时在 %ProgramData%\ChatlogAI 下生成。
 #
-# 阶段 D3 起**上游已从包里移除**（runtime\wechat，299MB），所以这里也不再要求
-# wechat-backend.exe / resources\ui —— 自研链路 C1–C5 已接管会话/消息、通讯录+头像、
-# 朋友圈时间线+用户、朋友圈导出，上游只剩「媒体本体」与账号枚举。C# 侧同样已去掉这两项。
+# 上游已恢复（runtime\wechat），授权页（10392）依赖 wechat-backend.exe 与 resources\ui，
+# 因此重新列入必需项：缺失会让"首次进入拿不到 db_key"却无提示，宁可打包时立即失败。
 $requiredPaths = @(
     (Join-Path $StageDir 'ChatlogAI.exe'),
     (Join-Path $StageDir 'app\server.py'),
     (Join-Path $StageDir 'app\localdb\service.py'),
     (Join-Path $StageDir 'runtime\python\python.exe'),
     (Join-Path $StageDir 'runtime\python-packages'),
-    (Join-Path $StageDir 'runtime\python-packages\zstandard')
+    (Join-Path $StageDir 'runtime\python-packages\zstandard'),
+    (Join-Path $StageDir 'runtime\wechat\resources\backend\wechat-backend.exe'),
+    (Join-Path $StageDir 'runtime\wechat\resources\ui')
 )
 $missing = @($requiredPaths | Where-Object { -not (Test-Path -LiteralPath $_) })
 if ($missing.Count -gt 0) {
